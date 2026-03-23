@@ -16,6 +16,30 @@ pub mod train_stream;
 pub mod args_file;
 
 pub mod slot;
+// Stage 3.7 BA is always available (pure Rust, no feature gate needed for the logic)
+pub mod sfm;
+
+// Re-export the most-used public types for convenience
+pub use sfm::stage_3_7_bundle_adjustment::{
+    axis_angle_to_rotation,
+    rotation_log,
+    run_levenberg_marquardt,
+    run_sliding_window_ba,
+    BaResult,
+    BaState,
+    CameraIntrinsics,
+    GlobalSfmState,
+    GpsPrior,
+    ImuRotationPrior,
+    LmConfig,
+    Observation,
+    SlidingWindowConfig,
+};
+
+// JNI bridge symbols are only compiled in when the feature is active.
+// This keeps the desktop/CI build clean (no jni crate needed there).
+#[cfg(feature = "jni-support")]
+pub use sfm::stage_3_7_bundle_adjustment::jni_bridge::*;
 
 use std::pin::{Pin, pin};
 

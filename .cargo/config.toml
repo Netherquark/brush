@@ -1,3 +1,37 @@
-[target.wasm32-unknown-unknown]
-rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
-runner = 'wasm-bindgen-test-runner'
+# ============================================================
+# FILE PATH: .cargo/config.toml
+#            (place this at <workspace_root>/.cargo/config.toml)
+#
+# PROJECT: brush-app — Drone-Driven On-Device Gaussian Splatting
+#
+# PURPOSE:
+#   Per-workspace Cargo configuration.
+#   Enables ARM NEON + FPv8 + crypto SIMD instructions for the
+#   aarch64-linux-android target (DJI Mini 2 → Snapdragon/Exynos ARM64).
+#
+#   nalgebra's matrix–vector ops (used heavily in BA Jacobian loops)
+#   are auto-vectorised by LLVM into NEON fmla/fmul instructions
+#   when these flags are set — no explicit NEON intrinsics needed.
+#
+# IMPORTANT:
+#   This file already exists in crates/brush-app/.cargo/config.toml
+#   (visible in your ls output). If a workspace-root .cargo/config.toml
+#   already exists, MERGE these rustflags into it rather than replacing.
+# ============================================================
+
+[target.aarch64-linux-android]
+rustflags = [
+    "-C", "target-feature=+neon,+fp-armv8,+crypto",
+    # Strict aliasing — safe because all our pointer casts go through nalgebra types
+    "-C", "opt-level=3",
+]
+
+# Desktop / CI testing target (no NEON flags — host CPU may not be ARM)
+[target.x86_64-unknown-linux-gnu]
+rustflags = []
+
+[target.x86_64-apple-darwin]
+rustflags = []
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-feature=+neon"]

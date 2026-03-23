@@ -39,6 +39,48 @@ android {
     namespace 'com.splats.app'
 }
 
+// ── Find NDK path ─────────────────────────────────────────────────────────────
+val ndkDir = android.ndkDirectory
+val opencvLibDir = project.findProperty("OPENCV_LIB_DIR")
+    ?: "${rootProject.projectDir.parent}/opencv/sdk/native/libs/arm64-v8a"
+
+// ── Gradle task: cargo cross-compile → copy .so ───────────────────────────────
+tasks.register("buildRustNativeBa") {
+    group = "build"
+    description = "Cross-compile brush-process (Rust BA) for arm64-v8a"
+
+    doLast {
+        exec {
+            environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
+            environment(
+                "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER",
+                "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
+            )
+            // Set OPENCV_LINK_LIBS_DIR only if you have OpenCV stages built
+            // environment("OPENCV_LINK_LIBS_DIR", opencvLibDir)
+
+            commandLine(
+                "cargo", "build",
+                "--release",
+                "--target", "aarch64-linux-android",
+                "--package", "brush-process",
+                "--features", "jni-support"
+            )
+            workingDir = rootProject.projectDir.parentFile   // workspace root
+        }
+
+        copy {
+            from("${rootProject.projectDir.parent}/target/aarch64-linux-android/release/libbrush_process.so")
+            into("${projectDir}/src/main/jniLibs/arm64-v8a/")
+        }
+    }
+}
+
+// Make Android build depend on Rust BA build
+tasks.named("preBuild") {
+    dependsOn("buildRustNativeBa")
+}
+
 dependencies {
 
     implementation 'androidx.appcompat:appcompat:1.7.0'
