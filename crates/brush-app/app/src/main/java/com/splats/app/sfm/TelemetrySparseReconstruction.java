@@ -118,7 +118,16 @@ public final class TelemetrySparseReconstruction {
         }
 
         if (pointIndex < 8) {
-            throw new IllegalStateException("Not enough triangulated matches for sparse reconstruction");
+            writeFallbackPly(plyFile, sequence.getRecords());
+            writeFallbackResult(
+                    resultFile,
+                    "fallback",
+                    "Not enough triangulated matches for sparse reconstruction",
+                    pointIndex,
+                    matchCount,
+                    sequence.getRecords().size()
+            );
+            return new Result(plyFile, resultFile, pointIndex, matchCount);
         }
 
         JSONObject intrinsicsJson = new JSONObject();
@@ -133,15 +142,30 @@ public final class TelemetrySparseReconstruction {
         configJson.put("freeze_first_frame", true);
         configJson.put("export_ply_path", plyFile.getAbsolutePath());
 
-        String resultJson = BundleAdjustmentLib.runBASync(
-                poses.toString(),
-                points.toString(),
-                observations.toString(),
-                intrinsicsJson.toString(),
-                gps.toString(),
-                imu.toString(),
-                configJson.toString()
-        );
+        String resultJson;
+        try {
+            resultJson = BundleAdjustmentLib.runBASync(
+                    poses.toString(),
+                    points.toString(),
+                    observations.toString(),
+                    intrinsicsJson.toString(),
+                    gps.toString(),
+                    imu.toString(),
+                    configJson.toString()
+            );
+        } catch (Exception e) {
+            Log.w(TAG, "Bundle adjustment failed, writing fallback sparse PLY", e);
+            writeFallbackPly(plyFile, sequence.getRecords());
+            writeFallbackResult(
+                    resultFile,
+                    "fallback",
+                    "Bundle adjustment failed: " + e.getMessage(),
+                    pointIndex,
+                    matchCount,
+                    sequence.getRecords().size()
+            );
+            return new Result(plyFile, resultFile, pointIndex, matchCount);
+        }
 
         if (resultFile.getParentFile() != null && !resultFile.getParentFile().exists()) {
             resultFile.getParentFile().mkdirs();
@@ -151,6 +175,59 @@ public final class TelemetrySparseReconstruction {
         }
 
         return new Result(plyFile, resultFile, pointIndex, matchCount);
+    }
+
+    private static void writeFallbackPly(File plyFile, List<PoseStamp> records) throws Exception {
+        if (plyFile.getParentFile() != null && !plyFile.getParentFile().exists()) {
+            plyFile.getParentFile().mkdirs();
+        }
+
+        StringBuilder builder = new StringBuilder();
+        builder.append("ply\n");
+        builder.append("format ascii 1.0\n");
+        builder.append("comment generated from telemetry fallback\n");
+        builder.append("element vertex ").append(records.size()).append('\n');
+        builder.append("property float x\n");
+        builder.append("property float y\n");
+        builder.append("property float z\n");
+        builder.append("property uchar red\n");
+        builder.append("property uchar green\n");
+        builder.append("property uchar blue\n");
+        builder.append("end_header\n");
+
+        for (PoseStamp record : records) {
+            builder.append(record.getEnuE()).append(' ')
+                    .append(record.getEnuN()).append(' ')
+                    .append(record.getEnuU()).append(' ')
+                    .append("255 196 64\n");
+        }
+
+        try (FileOutputStream out = new FileOutputStream(plyFile)) {
+            out.write(builder.toString().getBytes());
+        }
+    }
+
+    private static void writeFallbackResult(
+            File resultFile,
+            String status,
+            String message,
+            int pointCount,
+            int matchCount,
+            int poseCount
+    ) throws Exception {
+        if (resultFile.getParentFile() != null && !resultFile.getParentFile().exists()) {
+            resultFile.getParentFile().mkdirs();
+        }
+        JSONObject result = new JSONObject();
+        result.put("status", status);
+        result.put("message", message);
+        result.put("point_count", pointCount);
+        result.put("match_count", matchCount);
+        result.put("pose_count", poseCount);
+
+        try (FileOutputStream out = new FileOutputStream(resultFile)) {
+            out.write(result.toString(2).getBytes());
+        }
     }
 
     private static List<FrameData> loadFramesForSequence(PoseStampSequence sequence, File framesDir) {

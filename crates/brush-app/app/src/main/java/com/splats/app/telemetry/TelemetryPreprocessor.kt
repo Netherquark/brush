@@ -232,11 +232,12 @@ internal object TimeSyncEngine {
     private const val MIN_CORRELATION = 0.6
     private const val SEARCH_RANGE_US = 2_000_000L
     private const val SAMPLE_RATE_US  = 1_000_000L   // 1 Hz
+    private const val MAX_SYNC_SAMPLES = 24
 
     data class SyncResult(val offsetUs: Long, val correlation: Double)
 
     fun sync(records: List<TelRecord>, videoFile: File): SyncResult {
-        val altCurve   = extractAltitudeCurve(records)
+        val altCurve = downsampleCurve(extractAltitudeCurve(records), MAX_SYNC_SAMPLES)
         val videoCurve = extractVideoMotionProxy(videoFile, altCurve.size)
         val (offsetUs, corr) = ncc(altCurve, videoCurve, SEARCH_RANGE_US, SAMPLE_RATE_US)
 
@@ -289,11 +290,18 @@ internal object TimeSyncEngine {
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull() ?: return result
 
-            for (i in 0 until minOf(targetLen - 1, (durationMs / 1000).toInt())) {
+            val availableSteps = (durationMs / 1000).toInt().coerceAtLeast(1)
+            val stepSeconds = if (targetLen <= 1) 1.0 else {
+                availableSteps.toDouble() / (targetLen - 1).coerceAtLeast(1)
+            }
+
+            for (i in 0 until targetLen - 1) {
+                val startUs = (i * stepSeconds * SAMPLE_RATE_US).toLong()
+                val endUs = ((i + 1) * stepSeconds * SAMPLE_RATE_US).toLong()
                 val bmpA = retriever.getFrameAtTime(
-                    i * SAMPLE_RATE_US,       MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
+                    startUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
                 val bmpB = retriever.getFrameAtTime(
-                    (i + 1) * SAMPLE_RATE_US, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
+                    endUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
 
                 val w = bmpA.width; val h = bmpA.height
                 val l = (w * 0.40).toInt(); val r = (w * 0.60).toInt()
@@ -315,6 +323,18 @@ internal object TimeSyncEngine {
             // Decode failure → zeros → SyncFailure raised upstream
         } finally {
             retriever?.release()
+        }
+        return result
+    }
+
+    private fun downsampleCurve(source: DoubleArray, maxSamples: Int): DoubleArray {
+        if (source.size <= maxSamples) return source
+        val result = DoubleArray(maxSamples)
+        val lastSourceIndex = source.lastIndex.toDouble()
+        val lastResultIndex = (maxSamples - 1).coerceAtLeast(1).toDouble()
+        for (i in result.indices) {
+            val srcIndex = ((i / lastResultIndex) * lastSourceIndex).toInt().coerceIn(0, source.lastIndex)
+            result[i] = source[srcIndex]
         }
         return result
     }

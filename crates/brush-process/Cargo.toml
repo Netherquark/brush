@@ -54,12 +54,3 @@ brush-rerun = { path = "../brush-rerun", optional = true }
 
 [lints]
 workspace = true
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
-
-[profile.dev]
-opt-level = 1
