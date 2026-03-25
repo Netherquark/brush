@@ -14,6 +14,7 @@ training = ["dep:brush-train", "dep:brush-dataset", "dep:brush-rerun", "brush-se
 brush-render.path = "../brush-render"
 brush-vfs.path = "../brush-vfs"
 brush-serde.path = "../brush-serde"
+brush-sfm.path = "../brush-sfm"
 
 burn.workspace = true
 burn-cubecl.workspace = true

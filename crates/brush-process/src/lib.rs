@@ -4,6 +4,21 @@ use burn_wgpu::{
     RuntimeOptions, WgpuDevice,
     graphics::{AutoGraphicsApi, GraphicsApi},
 };
+pub use brush_sfm::{
+    BaResult,
+    BaState,
+    CameraIntrinsics,
+    GlobalSfmState,
+    GpsPrior,
+    ImuRotationPrior,
+    LmConfig,
+    Observation,
+    SlidingWindowConfig,
+    axis_angle_to_rotation,
+    rotation_log,
+    run_levenberg_marquardt,
+    run_sliding_window_ba,
+};
 use wgpu::{Adapter, Device, Queue};
 
 pub mod config;
