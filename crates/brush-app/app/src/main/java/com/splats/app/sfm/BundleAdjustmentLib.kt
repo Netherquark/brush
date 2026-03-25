@@ -20,6 +20,25 @@ object BundleAdjustmentLib {
         configJson: String,
     ): String
 
+    @JvmStatic
+    fun runBASync(
+        posesJson: String,
+        pointsJson: String,
+        obsJson: String,
+        intrinsicsJson: String,
+        gpsJson: String = "[]",
+        imuJson: String = "[]",
+        configJson: String = "{}",
+    ): String = runSlidingWindowBA(
+        posesJson = posesJson,
+        pointsJson = pointsJson,
+        obsJson = obsJson,
+        gpsJson = gpsJson,
+        imuJson = imuJson,
+        intrinsicsJson = intrinsicsJson,
+        configJson = configJson,
+    )
+
     suspend fun runBA(
         posesJson: String,
         pointsJson: String,

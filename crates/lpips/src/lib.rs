@@ -147,55 +147,54 @@ impl<B: Backend> LpipsModel<B> {
     }
 }
 
-// #[cfg(not(target_family = "wasm"))]
-// pub fn load_vgg_lpips<B: Backend>(device: &B::Device) -> LpipsModel<B> {
-//     use burn::record::BinBytesRecorder;
+#[cfg(not(target_family = "wasm"))]
+pub fn load_vgg_lpips<B: Backend>(device: &B::Device) -> LpipsModel<B> {
+    use burn::record::{BinBytesRecorder, HalfPrecisionSettings, Recorder};
 
-//     let model = LpipsModel::<B>::new(device);
+    let model = LpipsModel::<B>::new(device);
 
-//     #[allow(clippy::large_include_file)]
-//     //let bytes = include_bytes!("../burn_mapped.bin");
-//     let bytes = &[];
+    #[allow(clippy::large_include_file)]
+    let bytes = include_bytes!("../burn_mapped.bin");
 
-//     model.load_record(
-//         BinBytesRecorder::<HalfPrecisionSettings, &[u8]>::default()
-//             .load(bytes, device)
-//             .expect("Should decode state successfully"),
-//     )
-// }
+    model.load_record(
+        BinBytesRecorder::<HalfPrecisionSettings, &[u8]>::default()
+            .load(bytes, device)
+            .expect("Should decode state successfully"),
+    )
+}
 
-// #[cfg(test)]
-// mod tests {
-//     use super::load_vgg_lpips;
-//     use burn::backend::Wgpu;
-//     use burn::backend::wgpu::WgpuDevice;
-//     use burn::tensor::TensorData;
-//     use burn::tensor::{Tensor, backend::Backend};
-//     use image::ImageReader;
+#[cfg(test)]
+mod tests {
+    use super::load_vgg_lpips;
+    use burn::backend::Wgpu;
+    use burn::backend::wgpu::WgpuDevice;
+    use burn::tensor::TensorData;
+    use burn::tensor::{Tensor, backend::Backend};
+    use image::ImageReader;
 
-//     fn image_to_tensor<B: Backend>(device: &B::Device, img: &image::DynamicImage) -> Tensor<B, 4> {
-//         let rgb_img = img.to_rgb32f();
-//         let (w, h) = rgb_img.dimensions();
-//         let data = TensorData::new(rgb_img.into_vec(), [1, h as usize, w as usize, 3]);
-//         Tensor::from_data(data, device)
-//     }
+    fn image_to_tensor<B: Backend>(device: &B::Device, img: &image::DynamicImage) -> Tensor<B, 4> {
+        let rgb_img = img.to_rgb32f();
+        let (w, h) = rgb_img.dimensions();
+        let data = TensorData::new(rgb_img.into_vec(), [1, h as usize, w as usize, 3]);
+        Tensor::from_data(data, device)
+    }
 
-//     #[test]
-//     fn test_result() -> Result<(), Box<dyn std::error::Error>> {
-//         let device = WgpuDevice::default();
+    #[test]
+    fn test_result() -> Result<(), Box<dyn std::error::Error>> {
+        let device = WgpuDevice::default();
 
-//         // Load and preprocess the images
-//         let image1 = ImageReader::open("./apple.png")?.decode()?;
-//         let image2 = ImageReader::open("./pear.png")?.decode()?;
+        // Load and preprocess the images
+        let image1 = ImageReader::open("./apple.png")?.decode()?;
+        let image2 = ImageReader::open("./pear.png")?.decode()?;
 
-//         let apple = image_to_tensor::<Wgpu>(&device, &image1);
-//         let pear = image_to_tensor::<Wgpu>(&device, &image2);
+        let apple = image_to_tensor::<Wgpu>(&device, &image1);
+        let pear = image_to_tensor::<Wgpu>(&device, &image2);
 
-//         let model = load_vgg_lpips(&device);
+        let model = load_vgg_lpips(&device);
 
-//         // Calculate LPIPS similarity score between the two images
-//         let similarity_score = model.lpips(apple, pear).into_scalar();
-//         assert!((similarity_score - 0.65710217).abs() < 1e-4);
-//         Ok(())
-//     }
-// }
+        // Calculate LPIPS similarity score between the two images
+        let similarity_score = model.lpips(apple, pear).into_scalar();
+        assert!((similarity_score - 0.65710217).abs() < 1e-4);
+        Ok(())
+    }
+}

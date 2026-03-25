@@ -2,6 +2,8 @@ use anyhow::{Context, Result, bail};
 use nalgebra::{DMatrix, DVector, Matrix2x3, Matrix3, SMatrix, Vector2, Vector3};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
+use std::io::Write;
+use std::path::Path;
 
 fn default_weight() -> f64 {
     1.0
@@ -142,6 +144,8 @@ pub struct SlidingWindowConfig {
     pub window_size: usize,
     pub min_observations: usize,
     pub freeze_first_frame: bool,
+    #[serde(default)]
+    pub export_ply_path: Option<String>,
     #[serde(flatten)]
     pub lm: LmConfig,
 }
@@ -152,6 +156,7 @@ impl Default for SlidingWindowConfig {
             window_size: 8,
             min_observations: 12,
             freeze_first_frame: true,
+            export_ply_path: None,
             lm: LmConfig::default(),
         }
     }
@@ -292,8 +297,11 @@ pub fn run_sliding_window_ba(
     }
 
     if !any_window {
-        BaResult::default()
+        let result = BaResult::default();
+        maybe_write_ply(global, cfg);
+        result
     } else {
+        maybe_write_ply(global, cfg);
         aggregate
     }
 }
@@ -364,6 +372,55 @@ pub fn serialise_result_to_json(global: &GlobalSfmState) -> String {
         global: global.clone(),
     })
     .unwrap_or_else(|_| "{\"error\":\"serialise\"}".to_string())
+}
+
+pub fn sparse_points_to_ply_bytes(points: &[[f64; 3]]) -> Vec<u8> {
+    let mut output = Vec::new();
+    writeln!(&mut output, "ply").expect("vec write");
+    writeln!(&mut output, "format ascii 1.0").expect("vec write");
+    writeln!(&mut output, "comment Exported from brush-sfm").expect("vec write");
+    writeln!(&mut output, "element vertex {}", points.len()).expect("vec write");
+    writeln!(&mut output, "property float x").expect("vec write");
+    writeln!(&mut output, "property float y").expect("vec write");
+    writeln!(&mut output, "property float z").expect("vec write");
+    writeln!(&mut output, "property uchar red").expect("vec write");
+    writeln!(&mut output, "property uchar green").expect("vec write");
+    writeln!(&mut output, "property uchar blue").expect("vec write");
+    writeln!(&mut output, "end_header").expect("vec write");
+
+    for (index, point) in points.iter().enumerate() {
+        let color = pseudo_color(index);
+        writeln!(
+            &mut output,
+            "{:.6} {:.6} {:.6} {} {} {}",
+            point[0], point[1], point[2], color[0], color[1], color[2]
+        )
+        .expect("vec write");
+    }
+
+    output
+}
+
+pub fn global_state_to_ply_bytes(global: &GlobalSfmState) -> Vec<u8> {
+    sparse_points_to_ply_bytes(&global.points)
+}
+
+pub fn write_sparse_points_ply(path: impl AsRef<Path>, points: &[[f64; 3]]) -> Result<()> {
+    let bytes = sparse_points_to_ply_bytes(points);
+    std::fs::write(path.as_ref(), bytes)
+        .with_context(|| format!("failed to write PLY to {}", path.as_ref().display()))
+}
+
+pub fn write_global_state_ply(path: impl AsRef<Path>, global: &GlobalSfmState) -> Result<()> {
+    write_sparse_points_ply(path, &global.points)
+}
+
+fn maybe_write_ply(global: &GlobalSfmState, cfg: &SlidingWindowConfig) {
+    if let Some(path) = cfg.export_ply_path.as_deref() {
+        if let Err(error) = write_global_state_ply(path, global) {
+            eprintln!("brush-sfm: failed to write PLY to {path}: {error}");
+        }
+    }
 }
 
 fn run_lm_core(
@@ -1029,6 +1086,15 @@ fn matrix_to_array(matrix: &Matrix3<f64>) -> [[f64; 3]; 3] {
     ]
 }
 
+fn pseudo_color(index: usize) -> [u8; 3] {
+    let base = index as u32;
+    [
+        ((base.wrapping_mul(53) + 80) % 255) as u8,
+        ((base.wrapping_mul(97) + 120) % 255) as u8,
+        ((base.wrapping_mul(193) + 160) % 255) as u8,
+    ]
+}
+
 fn add_block(matrix: &mut DMatrix<f64>, row: usize, col: usize, block: &SMatrix<f64, 6, 6>) {
     for r in 0..6 {
         for c in 0..6 {
@@ -1237,9 +1303,33 @@ mod tests {
     }
 
     #[test]
+    fn sliding_window_can_auto_write_ply() {
+        let mut global = sample_global_state();
+        let out = std::env::temp_dir().join("brush_sfm_auto_export_test.ply");
+        let mut cfg = SlidingWindowConfig::default();
+        cfg.export_ply_path = Some(out.display().to_string());
+
+        let _ = run_sliding_window_ba(&mut global, &sample_intrinsics(), &cfg);
+
+        assert!(out.exists());
+        let content = std::fs::read_to_string(&out).expect("ply should be readable");
+        assert!(content.contains("ply"));
+        let _ = std::fs::remove_file(out);
+    }
+
+    #[test]
     fn lm_runs_on_full_state() {
         let mut global = sample_global_state();
         let result = run_levenberg_marquardt(&mut global, &sample_intrinsics(), &LmConfig::default());
         assert!(result.updated_points > 0);
+    }
+
+    #[test]
+    fn sparse_points_export_produces_ply_header() {
+        let ply = sparse_points_to_ply_bytes(&[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]);
+        let text = String::from_utf8(ply).expect("valid utf8");
+        assert!(text.contains("ply"));
+        assert!(text.contains("element vertex 2"));
+        assert!(text.contains("0.000000 1.000000 2.000000"));
     }
 }

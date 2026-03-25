@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 burn.workspace = true
+image.workspace = true
 
 [lints]
 workspace = true
