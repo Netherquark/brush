@@ -39,6 +39,7 @@ import java.util.Locale;
 
 import kotlinx.coroutines.GlobalScope;
 
+import com.splats.app.sfm.TelemetrySparseReconstruction;
 import com.splats.app.telemetry.TelemetryPreprocessor;
 import com.splats.app.telemetry.TelemetryPreprocessorCallback;
 import com.splats.app.telemetry.ProcessingStage;
@@ -272,6 +273,13 @@ public class MainActivity extends GameActivity {
                 if (error == null) {
                     Toast.makeText(MainActivity.this, "Telemetry preprocess complete", Toast.LENGTH_SHORT).show();
                     if (sequence != null) {
+                        File telemetryDir = sequence.getLogPath().getParentFile();
+                        String sessionBase = stripExtension(sequence.getLogPath().getName());
+                        File plyFile = new File(telemetryDir, sessionBase + "_sparse.ply");
+                        File resultFile = new File(telemetryDir, sessionBase + "_ba_result.json");
+
+                        new Thread(() -> runSparseExport(sequence, plyFile, resultFile)).start();
+
                         Toast.makeText(
                                 MainActivity.this,
                                 "Output: " + sequence.getLogPath().getParent(),
@@ -360,6 +368,39 @@ public class MainActivity extends GameActivity {
         }
         return null;
     }
+
+    private void runSparseExport(PoseStampSequence sequence, File plyFile, File resultFile) {
+        try {
+            TelemetrySparseReconstruction.Result result =
+                    TelemetrySparseReconstruction.run(this, sequence, plyFile, resultFile);
+            final boolean plyExists = plyFile.exists();
+            final String toastMessage = plyExists
+                    ? "Sparse PLY written: " + plyFile.getAbsolutePath()
+                    : "BA finished, but no PLY was written";
+
+            Log.i(TAG, "Sparse reconstruction points: " + result.pointCount + ", matches: " + result.matchCount);
+            Log.i(TAG, "Bundle adjustment result saved to " + result.resultFile.getAbsolutePath());
+            Log.i(TAG, "Sparse PLY path: " + result.plyFile.getAbsolutePath());
+
+            runOnUiThread(() -> Toast.makeText(MainActivity.this, toastMessage, Toast.LENGTH_LONG).show());
+        } catch (Exception e) {
+            Log.e(TAG, "Sparse export failed", e);
+            runOnUiThread(() -> Toast.makeText(
+                    MainActivity.this,
+                    "Sparse export failed: " + e.getMessage(),
+                    Toast.LENGTH_LONG
+            ).show());
+        }
+    }
+
+    private String stripExtension(String name) {
+        int index = name.lastIndexOf('.');
+        if (index <= 0) {
+            return name;
+        }
+        return name.substring(0, index);
+    }
+
 
     private void extractFrames(Uri videoUri) {
 

@@ -20,6 +20,7 @@ training = ["dep:brush-train", "dep:brush-dataset", "dep:brush-rerun", "brush-se
 brush-render.path = "../brush-render"
 brush-vfs.path = "../brush-vfs"
 brush-serde.path = "../brush-serde"
+brush-sfm.path = "../brush-sfm"
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
 jni = { version = "0.21", optional = true }
 

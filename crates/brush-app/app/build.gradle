@@ -3,8 +3,10 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+import java.util.Locale
+
 android {
-    ndkVersion "25.2.9519653"
+    ndkVersion "30.0.14904198"
     compileSdk 34
 
     defaultConfig {
@@ -39,48 +41,6 @@ android {
     namespace 'com.splats.app'
 }
 
-// ── Find NDK path ─────────────────────────────────────────────────────────────
-val ndkDir = android.ndkDirectory
-val opencvLibDir = project.findProperty("OPENCV_LIB_DIR")
-    ?: "${rootProject.projectDir.parent}/opencv/sdk/native/libs/arm64-v8a"
-
-// ── Gradle task: cargo cross-compile → copy .so ───────────────────────────────
-tasks.register("buildRustNativeBa") {
-    group = "build"
-    description = "Cross-compile brush-process (Rust BA) for arm64-v8a"
-
-    doLast {
-        exec {
-            environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
-            environment(
-                "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER",
-                "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
-            )
-            // Set OPENCV_LINK_LIBS_DIR only if you have OpenCV stages built
-            // environment("OPENCV_LINK_LIBS_DIR", opencvLibDir)
-
-            commandLine(
-                "cargo", "build",
-                "--release",
-                "--target", "aarch64-linux-android",
-                "--package", "brush-process",
-                "--features", "jni-support"
-            )
-            workingDir = rootProject.projectDir.parentFile   // workspace root
-        }
-
-        copy {
-            from("${rootProject.projectDir.parent}/target/aarch64-linux-android/release/libbrush_process.so")
-            into("${projectDir}/src/main/jniLibs/arm64-v8a/")
-        }
-    }
-}
-
-// Make Android build depend on Rust BA build
-tasks.named("preBuild") {
-    dependsOn("buildRustNativeBa")
-}
-
 dependencies {
 
     implementation 'androidx.appcompat:appcompat:1.7.0'
@@ -99,7 +59,7 @@ dependencies {
 
     // Kotlin + coroutines for telemetry pipeline
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
 
     // JSON output for telemetry
     implementation "com.google.code.gson:gson:2.10.1"
@@ -109,4 +69,62 @@ dependencies {
 
     // To use the Games Text Input Library
     //implementation "androidx.games:games-text-input:1.1.0"
+}
+
+def ndkHostTag() {
+    def osName = System.getProperty("os.name").toLowerCase(Locale.ROOT)
+    def arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT)
+    if (osName.contains("mac")) {
+        def armTag = "darwin-arm64"
+        def x86Tag = "darwin-x86_64"
+        def prebuiltDir = new File(android.ndkDirectory, "toolchains/llvm/prebuilt")
+        if ((arch.contains("aarch64") || arch.contains("arm")) && new File(prebuiltDir, armTag).exists()) {
+            return armTag
+        }
+        if (new File(prebuiltDir, x86Tag).exists()) {
+            return x86Tag
+        }
+        return armTag
+    }
+    if (osName.contains("linux")) {
+        return "linux-x86_64"
+    }
+    if (osName.contains("windows")) {
+        return "windows-x86_64"
+    }
+    throw new GradleException("Unsupported host OS for NDK: ${osName}")
+}
+
+def workspaceDir = rootProject.projectDir.parentFile.parentFile
+def ndkDir = android.ndkDirectory
+def hostTag = ndkHostTag()
+def clangBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/aarch64-linux-android33-clang")
+
+tasks.register("buildRustNativeBa") {
+    group = "build"
+    description = "Cross-compile brush-sfm for arm64-v8a"
+
+    doLast {
+        exec {
+            environment "ANDROID_NDK_HOME", ndkDir.absolutePath
+            environment "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", clangBin.absolutePath
+            commandLine(
+                "cargo", "build",
+                "--release",
+                "--target", "aarch64-linux-android",
+                "--package", "brush-sfm",
+                "--features", "jni-support"
+            )
+            workingDir = workspaceDir
+        }
+
+        copy {
+            from(new File(workspaceDir, "target/aarch64-linux-android/release/libbrush_sfm.so"))
+            into(new File(projectDir, "src/main/jniLibs/arm64-v8a"))
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("buildRustNativeBa")
 }

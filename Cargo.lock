@@ -1146,6 +1146,7 @@ dependencies = [
  "brush-render",
  "brush-rerun",
  "brush-serde",
+ "brush-sfm",
  "brush-train",
  "brush-vfs",
  "burn",
@@ -1251,6 +1252,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "brush-sfm"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "jni",
+ "nalgebra",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
