@@ -3,8 +3,11 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+import java.util.Locale
+import java.util.Properties
+
 android {
-    ndkVersion "25.2.9519653"
+    ndkVersion "30.0.14904198"
     compileSdk 34
 
     defaultConfig {
@@ -57,7 +60,7 @@ dependencies {
 
     // Kotlin + coroutines for telemetry pipeline
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
 
     // JSON output for telemetry
     implementation "com.google.code.gson:gson:2.10.1"
@@ -67,4 +70,109 @@ dependencies {
 
     // To use the Games Text Input Library
     //implementation "androidx.games:games-text-input:1.1.0"
+}
+
+def ndkHostTag() {
+    def osName = System.getProperty("os.name").toLowerCase(Locale.ROOT)
+    def arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT)
+    if (osName.contains("mac")) {
+        def armTag = "darwin-arm64"
+        def x86Tag = "darwin-x86_64"
+        def prebuiltDir = new File(android.ndkDirectory, "toolchains/llvm/prebuilt")
+        if ((arch.contains("aarch64") || arch.contains("arm")) && new File(prebuiltDir, armTag).exists()) {
+            return armTag
+        }
+        if (new File(prebuiltDir, x86Tag).exists()) {
+            return x86Tag
+        }
+        return armTag
+    }
+    if (osName.contains("linux")) {
+        return "linux-x86_64"
+    }
+    if (osName.contains("windows")) {
+        return "windows-x86_64"
+    }
+    throw new GradleException("Unsupported host OS for NDK: ${osName}")
+}
+
+def localProperties() {
+    def props = new Properties()
+    def localPropsFile = rootProject.file("local.properties")
+    if (localPropsFile.exists()) {
+        localPropsFile.withInputStream { stream ->
+            props.load(stream)
+        }
+    }
+    return props
+}
+
+def findCargo() {
+    def configuredPath = findProperty("CARGO_PATH") ?: localProperties().getProperty("CARGO_PATH")
+    if (configuredPath != null) {
+        def configuredCargo = new File(configuredPath.toString())
+        if (configuredCargo.canExecute()) {
+            return configuredCargo.absolutePath
+        }
+        throw new GradleException("Configured CARGO_PATH does not point to an executable cargo binary: ${configuredCargo}")
+    }
+
+    def candidates = [
+        new File(System.getProperty("user.home"), ".cargo/bin/cargo"),
+        new File("/usr/local/bin/cargo"),
+        new File("/usr/bin/cargo"),
+        new File("/opt/homebrew/bin/cargo"),
+    ]
+    def cargoBinary = candidates.find { it.canExecute() }
+    if (cargoBinary != null) {
+        return cargoBinary.absolutePath
+    }
+
+    throw new GradleException(
+        "cargo not found. Set CARGO_PATH in local.properties or install Rust with rustup and restart Android Studio."
+    )
+}
+
+def workspaceDir = rootProject.projectDir.parentFile.parentFile
+def ndkDir = android.ndkDirectory
+def hostTag = ndkHostTag()
+def clangBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/aarch64-linux-android33-clang")
+def arBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/llvm-ar")
+
+tasks.register("buildRustNativeBa") {
+    group = "build"
+    description = "Cross-compile brush-process for arm64-v8a"
+
+    doLast {
+        def cargoPath = findCargo()
+        exec {
+            environment "ANDROID_NDK_HOME", ndkDir.absolutePath
+            environment "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", clangBin.absolutePath
+            environment "CC_aarch64_linux_android", clangBin.absolutePath
+            environment "CC_aarch64-linux-android", clangBin.absolutePath
+            environment "CXX_aarch64_linux_android", clangBin.absolutePath
+            environment "CXX_aarch64-linux-android", clangBin.absolutePath
+            environment "AR_aarch64_linux_android", arBin.absolutePath
+            environment "AR_aarch64-linux-android", arBin.absolutePath
+            environment "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR", arBin.absolutePath
+            environment "PATH", "${new File(cargoPath).parent}${File.pathSeparator}${System.getenv("PATH") ?: ""}"
+            commandLine(
+                cargoPath, "build",
+                "--release",
+                "--target", "aarch64-linux-android",
+                "--package", "brush-process",
+                "--features", "jni-support"
+            )
+            workingDir = workspaceDir
+        }
+
+        copy {
+            from(new File(workspaceDir, "target/aarch64-linux-android/release/libbrush_process.so"))
+            into(new File(projectDir, "src/main/jniLibs/arm64-v8a"))
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("buildRustNativeBa")
 }

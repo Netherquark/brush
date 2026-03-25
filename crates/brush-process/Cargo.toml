@@ -5,8 +5,14 @@ edition.workspace = true
 version.workspace = true
 readme.workspace = true
 license.workspace = true
+description = "SfM pipeline (Stage 3.1–3.8) + Rust-native Bundle Adjustment"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [features]
+default = ["jni-support"]
+jni-support = ["jni"]
 debug-validation = ["brush-train/debug-validation"]
 training = ["dep:brush-train", "dep:brush-dataset", "dep:brush-rerun", "brush-serde/export"]
 
@@ -14,6 +20,9 @@ training = ["dep:brush-train", "dep:brush-dataset", "dep:brush-rerun", "brush-se
 brush-render.path = "../brush-render"
 brush-vfs.path = "../brush-vfs"
 brush-serde.path = "../brush-serde"
+brush-sfm.path = "../brush-sfm"
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+jni = { version = "0.21", optional = true }
 
 burn.workspace = true
 burn-cubecl.workspace = true

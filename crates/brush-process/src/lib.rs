@@ -4,6 +4,25 @@ use burn_wgpu::{
     RuntimeOptions, WgpuDevice,
     graphics::{AutoGraphicsApi, GraphicsApi},
 };
+pub use brush_sfm::{
+    BaResult,
+    BaState,
+    CameraIntrinsics,
+    GlobalSfmState,
+    GpsPrior,
+    ImuRotationPrior,
+    LmConfig,
+    Observation,
+    SlidingWindowConfig,
+    axis_angle_to_rotation,
+    global_state_to_ply_bytes,
+    rotation_log,
+    run_levenberg_marquardt,
+    run_sliding_window_ba,
+    sparse_points_to_ply_bytes,
+    write_global_state_ply,
+    write_sparse_points_ply,
+};
 use wgpu::{Adapter, Device, Queue};
 
 pub mod config;
@@ -16,6 +35,13 @@ pub mod train_stream;
 pub mod args_file;
 
 pub mod slot;
+// Stage 3.7 BA is always available (pure Rust, no feature gate needed for the logic)
+pub mod sfm;
+
+// JNI bridge symbols are only compiled in when the feature is active.
+// This keeps the desktop/CI build clean (no jni crate needed there).
+#[cfg(feature = "jni-support")]
+pub use sfm::stage_3_7_bundle_adjustment::jni_bridge::*;
 
 use std::pin::{Pin, pin};
 
