@@ -413,14 +413,34 @@ public class MainActivity extends GameActivity {
             Log.i(TAG, "Bundle adjustment result saved to " + result.resultFile.getAbsolutePath());
             Log.i(TAG, "Sparse PLY path: " + result.plyFile.getAbsolutePath());
 
-            mainHandler.post(() -> Toast.makeText(MainActivity.this, toastMessage, Toast.LENGTH_LONG).show());
+            if (Thread.currentThread().isInterrupted()) {
+                Log.i(TAG, "Sparse export interrupted before UI notification");
+                return;
+            }
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    Log.i(TAG, "Skipping sparse export toast because activity is finishing");
+                    return;
+                }
+                Toast.makeText(getApplicationContext(), toastMessage, Toast.LENGTH_LONG).show();
+            });
         } catch (Exception e) {
             Log.e(TAG, "Sparse export failed", e);
-            mainHandler.post(() -> Toast.makeText(
-                    MainActivity.this,
-                    "Sparse export failed: " + e.getMessage(),
-                    Toast.LENGTH_LONG
-            ).show());
+            if (Thread.currentThread().isInterrupted()) {
+                Log.i(TAG, "Sparse export interrupted after failure");
+                return;
+            }
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    Log.i(TAG, "Skipping sparse export failure toast because activity is finishing");
+                    return;
+                }
+                Toast.makeText(
+                        getApplicationContext(),
+                        "Sparse export failed: " + e.getMessage(),
+                        Toast.LENGTH_LONG
+                ).show();
+            });
         }
     }
 

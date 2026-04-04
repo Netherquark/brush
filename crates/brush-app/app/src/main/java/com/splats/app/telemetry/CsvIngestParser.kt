@@ -10,22 +10,62 @@ import android.util.Log
 
 /**
  * Maps canonical field names to the two known vendor header variants.
- * First entry = DJI standard export.  Second entry = Litchi export.
+ * DJI aliases are checked only on the DJI pass.
+ * Litchi aliases are checked only on the Litchi pass.
  */
+private data class HeaderAliases(
+    val dji: List<String>,
+    val litchi: List<String> = emptyList()
+)
+
 private object ColumnMap {
-    // canonical        DJI headers                                           Litchi headers
-    val TIMESTAMP   = listOf("time(millisecond)", "timestamps_ns",             "datetime(utc)")
-    val LAT         = listOf("latitude", "osd.latitude",                       "gps(0)[latitude]")
-    val LON         = listOf("longitude", "osd.longitude",                     "gps(0)[longitude]")
-    val ALT         = listOf("altitude(m)", "osd.altitude[ft]", "osd.height[ft]", "altitude_ft", "altitude(m)")
-    val HEADING     = listOf("compass_heading(degrees)", "yaw", "yaw(deg)")
-    val GIMBAL_PITCH= listOf("gimbal_pitch(degrees)", "gimbal.pitch", "gimbal_pitch", "gimbalpitchraw")
-    val VEL_N       = listOf("speed_n(m/s)", "osd.yspeed[mph]", "velocityy(mps)")
-    val VEL_E       = listOf("speed_e(m/s)", "osd.xspeed[mph]", "horizontal_speed_mph", "velocityx(mps)")
-    val VEL_D       = listOf("speed_d(m/s)", "osd.zspeed[mph]", "velocityz(mps)", "vertical_speed_mph")
-    val HDOP        = listOf("gps(accuracy)", "osd.gpslevel", "osd.gpsnum",    "satellites")
-    val FIX_TYPE    = listOf("gps(fixType)", "osd.gpslevel",                    "fixType")
-    val SATELLITES  = listOf("satellites", "osd.gpsnum",                        "satellites")
+    val TIMESTAMP    = HeaderAliases(
+        dji = listOf("time(millisecond)", "timestamps_ns"),
+        litchi = listOf("datetime(utc)")
+    )
+    val LAT          = HeaderAliases(
+        dji = listOf("latitude", "osd.latitude"),
+        litchi = listOf("gps(0)[latitude]")
+    )
+    val LON          = HeaderAliases(
+        dji = listOf("longitude", "osd.longitude"),
+        litchi = listOf("gps(0)[longitude]")
+    )
+    val ALT          = HeaderAliases(
+        dji = listOf("altitude(m)", "osd.altitude[ft]", "osd.height[ft]", "altitude_ft"),
+        litchi = listOf("altitude(m)")
+    )
+    val HEADING      = HeaderAliases(
+        dji = listOf("compass_heading(degrees)", "yaw"),
+        litchi = listOf("yaw(deg)")
+    )
+    val GIMBAL_PITCH = HeaderAliases(
+        dji = listOf("gimbal_pitch(degrees)", "gimbal.pitch", "gimbal_pitch"),
+        litchi = listOf("gimbalpitchraw")
+    )
+    val VEL_N        = HeaderAliases(
+        dji = listOf("speed_n(m/s)", "osd.yspeed[mph]"),
+        litchi = listOf("velocityy(mps)")
+    )
+    val VEL_E        = HeaderAliases(
+        dji = listOf("speed_e(m/s)", "osd.xspeed[mph]"),
+        litchi = listOf("velocityx(mps)")
+    )
+    val VEL_D        = HeaderAliases(
+        dji = listOf("speed_d(m/s)", "osd.zspeed[mph]", "vertical_speed_mph"),
+        litchi = listOf("velocityz(mps)")
+    )
+    val HDOP         = HeaderAliases(
+        dji = listOf("gps(accuracy)", "osd.gpslevel", "osd.gpsnum", "satellites")
+    )
+    val FIX_TYPE     = HeaderAliases(
+        dji = listOf("gps(fixType)", "osd.gpslevel"),
+        litchi = listOf("fixType")
+    )
+    val SATELLITES   = HeaderAliases(
+        dji = listOf("satellites", "osd.gpsnum"),
+        litchi = listOf("satellites")
+    )
 }
 
 // ─── CSV Ingest ───────────────────────────────────────────────────────────────
@@ -100,7 +140,27 @@ internal object CsvIngest {
     }
 
     private fun splitCsvLine(line: String): List<String> =
-        line.split(',').map { it.trim() }
+        buildList {
+            val current = StringBuilder()
+            var inQuotes = false
+
+            for (ch in line) {
+                when (ch) {
+                    '"' -> inQuotes = !inQuotes
+                    ',' -> {
+                        if (inQuotes) {
+                            current.append(ch)
+                        } else {
+                            add(current.toString().trim())
+                            current.setLength(0)
+                        }
+                    }
+                    else -> current.append(ch)
+                }
+            }
+
+            add(current.toString().trim())
+        }
 
 }
 
@@ -153,10 +213,9 @@ internal object CsvParser {
     ): List<TelRow> {
         val lower = headers.map { normalizeHeader(it) }
 
-        fun resolve(aliases: List<String>): Int? {
-            val preferred = aliases.getOrNull(vendorIndex)
-            val ordered = if (preferred != null) listOf(preferred) + aliases else aliases
-            for (alias in ordered) {
+        fun resolve(aliases: HeaderAliases): Int? {
+            val candidates = if (vendorIndex == 0) aliases.dji else aliases.litchi
+            for (alias in candidates) {
                 val idx = lower.indexOf(normalizeHeader(alias))
                 if (idx >= 0) return idx
             }
@@ -223,7 +282,7 @@ internal object CsvParser {
 
     private fun parseAltitudeMeters(raw: String, header: String): Double {
         val value = raw.toDoubleOrNull() ?: return 0.0
-        return if (header.contains("[ft]")) value * 0.3048 else value
+        return if (header.contains("[ft]") || header.contains("_ft")) value * 0.3048 else value
     }
 
     private fun parseSpeedMps(raw: String, header: String): Double {
