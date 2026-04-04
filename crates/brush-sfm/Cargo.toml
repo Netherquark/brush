@@ -8,7 +8,7 @@ repository.workspace = true
 
 [lib]
 name = "brush_sfm"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [dependencies]
 serde.workspace = true

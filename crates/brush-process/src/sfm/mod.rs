@@ -24,7 +24,14 @@
 // ============================================================
 
 // ── Stage 3.7: Sliding-Window Bundle Adjustment (implemented) ────────────────
-pub mod stage_3_7_bundle_adjustment;
+pub mod stage_3_7_bundle_adjustment {
+    pub use brush_sfm::*;
+
+    #[cfg(feature = "jni-support")]
+    pub mod jni_bridge {
+        pub use brush_sfm::sfm::stage_3_7_bundle_adjustment::jni_bridge::*;
+    }
+}
 
 // ── Placeholder stubs for OpenCV stages (fill in as you implement them) ───────
 // Uncomment each line when the corresponding file exists:

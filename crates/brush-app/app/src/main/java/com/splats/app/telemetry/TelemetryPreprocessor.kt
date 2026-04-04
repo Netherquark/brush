@@ -232,6 +232,7 @@ internal object TimeSyncEngine {
     private const val MIN_CORRELATION = 0.6
     private const val SEARCH_RANGE_US = 2_000_000L
     private const val SAMPLE_RATE_US  = 1_000_000L   // 1 Hz
+    // Keep sync cheap on-device while still preserving enough structure for coarse NCC.
     private const val MAX_SYNC_SAMPLES = 24
 
     data class SyncResult(val offsetUs: Long, val correlation: Double)
@@ -242,8 +243,8 @@ internal object TimeSyncEngine {
         val (offsetUs, corr) = ncc(altCurve, videoCurve, SEARCH_RANGE_US, SAMPLE_RATE_US)
 
         if (corr < MIN_CORRELATION) {
-            Log.w("TelemetryPreprocessor", "Sync correlation too low ($corr). Falling back to 0 offset.")
-            return SyncResult(0L, corr)
+            Log.w("TelemetryPreprocessor", "Sync correlation too low ($corr) at offset ${offsetUs / 1_000_000.0}s")
+            throw TelemetryError.SyncFailure(offsetUs / 1_000_000.0)
         }
         return SyncResult(offsetUs, corr)
     }
@@ -290,14 +291,12 @@ internal object TimeSyncEngine {
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull() ?: return result
 
-            val availableSteps = (durationMs / 1000).toInt().coerceAtLeast(1)
-            val stepSeconds = if (targetLen <= 1) 1.0 else {
-                availableSteps.toDouble() / (targetLen - 1).coerceAtLeast(1)
-            }
+            val availableSteps = (durationMs / 1000.0).coerceAtLeast(1.0)
+            val intervalSeconds = (availableSteps / targetLen.coerceAtLeast(1)).coerceAtLeast(1e-3)
 
-            for (i in 0 until targetLen - 1) {
-                val startUs = (i * stepSeconds * SAMPLE_RATE_US).toLong()
-                val endUs = ((i + 1) * stepSeconds * SAMPLE_RATE_US).toLong()
+            for (i in result.indices) {
+                val startUs = (i * intervalSeconds * SAMPLE_RATE_US).toLong()
+                val endUs = (((i + 1) * intervalSeconds).coerceAtMost(availableSteps) * SAMPLE_RATE_US).toLong()
                 val bmpA = retriever.getFrameAtTime(
                     startUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
                 val bmpB = retriever.getFrameAtTime(
@@ -333,8 +332,11 @@ internal object TimeSyncEngine {
         val lastSourceIndex = source.lastIndex.toDouble()
         val lastResultIndex = (maxSamples - 1).coerceAtLeast(1).toDouble()
         for (i in result.indices) {
-            val srcIndex = ((i / lastResultIndex) * lastSourceIndex).toInt().coerceIn(0, source.lastIndex)
-            result[i] = source[srcIndex]
+            val srcPos = ((i / lastResultIndex) * lastSourceIndex).coerceIn(0.0, lastSourceIndex)
+            val left = srcPos.toInt()
+            val right = (left + 1).coerceAtMost(source.lastIndex)
+            val fraction = srcPos - left
+            result[i] = source[left] * (1.0 - fraction) + source[right] * fraction
         }
         return result
     }

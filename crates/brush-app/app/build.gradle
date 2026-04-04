@@ -142,6 +142,15 @@ def arBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/llvm-ar")
 tasks.register("buildRustNativeBa") {
     group = "build"
     description = "Cross-compile brush-process for arm64-v8a"
+    def rustOutput = new File(projectDir, "src/main/jniLibs/arm64-v8a/libbrush_process.so")
+
+    inputs.files(fileTree(workspaceDir) {
+        include "Cargo.toml"
+        include "Cargo.lock"
+        include "crates/brush-process/**"
+        include "crates/brush-sfm/**"
+    })
+    outputs.file(rustOutput)
 
     doLast {
         def cargoPath = findCargo()
@@ -168,7 +177,7 @@ tasks.register("buildRustNativeBa") {
 
         copy {
             from(new File(workspaceDir, "target/aarch64-linux-android/release/libbrush_process.so"))
-            into(new File(projectDir, "src/main/jniLibs/arm64-v8a"))
+            into(rustOutput.parentFile)
         }
     }
 }

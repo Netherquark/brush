@@ -1,12 +1,14 @@
 package com.splats.app.sfm
 
+import android.os.Looper
+import androidx.annotation.WorkerThread
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 object BundleAdjustmentLib {
 
     init {
-        System.loadLibrary("brush_sfm")
+        System.loadLibrary("brush_process")
     }
 
     @JvmStatic
@@ -21,6 +23,7 @@ object BundleAdjustmentLib {
     ): String
 
     @JvmStatic
+    @WorkerThread
     fun runBASync(
         posesJson: String,
         pointsJson: String,
@@ -29,15 +32,18 @@ object BundleAdjustmentLib {
         gpsJson: String = "[]",
         imuJson: String = "[]",
         configJson: String = "{}",
-    ): String = runSlidingWindowBA(
-        posesJson = posesJson,
-        pointsJson = pointsJson,
-        obsJson = obsJson,
-        gpsJson = gpsJson,
-        imuJson = imuJson,
-        intrinsicsJson = intrinsicsJson,
-        configJson = configJson,
-    )
+    ): String {
+        checkWorkerThread()
+        return runSlidingWindowBA(
+            posesJson = posesJson,
+            pointsJson = pointsJson,
+            obsJson = obsJson,
+            gpsJson = gpsJson,
+            imuJson = imuJson,
+            intrinsicsJson = intrinsicsJson,
+            configJson = configJson,
+        )
+    }
 
     suspend fun runBA(
         posesJson: String,
@@ -57,5 +63,11 @@ object BundleAdjustmentLib {
             intrinsicsJson = intrinsicsJson,
             configJson = configJson,
         )
+    }
+
+    private fun checkWorkerThread() {
+        check(Looper.myLooper() != Looper.getMainLooper()) {
+            "Bundle adjustment must not run on the main thread"
+        }
     }
 }

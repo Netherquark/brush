@@ -17,6 +17,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.provider.OpenableColumns;
@@ -36,10 +38,13 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-import kotlinx.coroutines.GlobalScope;
+import kotlinx.coroutines.CoroutineScope;
 
 import com.splats.app.sfm.TelemetrySparseReconstruction;
+import com.splats.app.telemetry.ActivityCoroutineScope;
 import com.splats.app.telemetry.TelemetryPreprocessor;
 import com.splats.app.telemetry.TelemetryPreprocessorCallback;
 import com.splats.app.telemetry.ProcessingStage;
@@ -66,6 +71,10 @@ public class MainActivity extends GameActivity {
     private File selectedCsvFile = null;
     private File selectedVideoFile = null;
     private boolean telemetryRunning = false;
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private CoroutineScope telemetryScope;
+    private TelemetryPreprocessor telemetryPreprocessor;
 
     private void hideSystemUI() {
         getWindow().getAttributes().layoutInDisplayCutoutMode =
@@ -89,6 +98,7 @@ public class MainActivity extends GameActivity {
         super.onCreate(savedInstanceState);
 
         instance = this;
+        telemetryScope = ActivityCoroutineScope.create();
 
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -129,6 +139,17 @@ public class MainActivity extends GameActivity {
         buttonColumn.addView(csvButton);
 
         addContentView(buttonColumn, lp);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (telemetryPreprocessor != null) {
+            telemetryPreprocessor.cancel();
+            telemetryPreprocessor = null;
+        }
+        ActivityCoroutineScope.cancel(telemetryScope);
+        backgroundExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
@@ -256,6 +277,7 @@ public class MainActivity extends GameActivity {
         if (selectedCsvFile == null || selectedVideoFile == null) return;
         if (!selectedCsvFile.exists() || !selectedVideoFile.exists()) return;
 
+        cleanupTelemetryOutputs();
         telemetryRunning = true;
         Toast.makeText(this, "Starting telemetry preprocess...", Toast.LENGTH_SHORT).show();
 
@@ -274,11 +296,20 @@ public class MainActivity extends GameActivity {
                     Toast.makeText(MainActivity.this, "Telemetry preprocess complete", Toast.LENGTH_SHORT).show();
                     if (sequence != null) {
                         File telemetryDir = sequence.getLogPath().getParentFile();
+                        if (telemetryDir == null) {
+                            Log.e(TAG, "Telemetry log path has no parent directory");
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Telemetry output directory is unavailable",
+                                    Toast.LENGTH_LONG
+                            ).show();
+                            return;
+                        }
                         String sessionBase = stripExtension(sequence.getLogPath().getName());
                         File plyFile = new File(telemetryDir, sessionBase + "_sparse.ply");
                         File resultFile = new File(telemetryDir, sessionBase + "_ba_result.json");
 
-                        new Thread(() -> runSparseExport(sequence, plyFile, resultFile)).start();
+                        backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile));
 
                         Toast.makeText(
                                 MainActivity.this,
@@ -304,7 +335,7 @@ public class MainActivity extends GameActivity {
         }
         String sessionId = "session_" + System.currentTimeMillis();
 
-        TelemetryPreprocessor preprocessor =
+        telemetryPreprocessor =
                 new TelemetryPreprocessor(
                         selectedCsvFile,
                         selectedVideoFile,
@@ -314,7 +345,7 @@ public class MainActivity extends GameActivity {
                         outDir,
                         sessionId
                 );
-        preprocessor.start(GlobalScope.INSTANCE);
+        telemetryPreprocessor.start(telemetryScope);
     }
 
     private File ensureLocalFileForUri(Uri uri, String prefix, String fallbackExt) {
@@ -382,10 +413,10 @@ public class MainActivity extends GameActivity {
             Log.i(TAG, "Bundle adjustment result saved to " + result.resultFile.getAbsolutePath());
             Log.i(TAG, "Sparse PLY path: " + result.plyFile.getAbsolutePath());
 
-            runOnUiThread(() -> Toast.makeText(MainActivity.this, toastMessage, Toast.LENGTH_LONG).show());
+            mainHandler.post(() -> Toast.makeText(MainActivity.this, toastMessage, Toast.LENGTH_LONG).show());
         } catch (Exception e) {
             Log.e(TAG, "Sparse export failed", e);
-            runOnUiThread(() -> Toast.makeText(
+            mainHandler.post(() -> Toast.makeText(
                     MainActivity.this,
                     "Sparse export failed: " + e.getMessage(),
                     Toast.LENGTH_LONG
@@ -403,6 +434,7 @@ public class MainActivity extends GameActivity {
 
 
     private void extractFrames(Uri videoUri) {
+        cleanupExtractedFrames();
 
         // Show a simple modal progress dialog with a horizontal progress bar
         final AlertDialog[] dialogHolder = new AlertDialog[1];
@@ -565,5 +597,46 @@ public class MainActivity extends GameActivity {
                 });
             }
         }).start();
+    }
+
+    private void cleanupTelemetryOutputs() {
+        File telemetryAppDir = getExternalFilesDir("telemetry");
+        deleteFilesMatching(telemetryAppDir, name -> name.endsWith(".posestamps") || name.endsWith(".posestamps.json"));
+
+        if (selectedCsvFile != null) {
+            File telemetryDir = selectedCsvFile.getParentFile();
+            if (telemetryDir != null) {
+                String sessionBase = stripExtension(selectedCsvFile.getName());
+                deleteIfExists(new File(telemetryDir, sessionBase + "_sparse.ply"));
+                deleteIfExists(new File(telemetryDir, sessionBase + "_ba_result.json"));
+            }
+        }
+    }
+
+    private void cleanupExtractedFrames() {
+        File outputDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        deleteFilesMatching(outputDir, name -> name.startsWith("frame_") && name.endsWith(".jpg"));
+    }
+
+    private interface NameMatcher {
+        boolean matches(String name);
+    }
+
+    private void deleteFilesMatching(File dir, NameMatcher matcher) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File file : files) {
+            if (file.isFile() && matcher.matches(file.getName())) {
+                deleteIfExists(file);
+            }
+        }
+    }
+
+    private void deleteIfExists(File file) {
+        if (file == null || !file.exists()) return;
+        if (!file.delete()) {
+            Log.w(TAG, "Failed to delete stale file: " + file.getAbsolutePath());
+        }
     }
 }

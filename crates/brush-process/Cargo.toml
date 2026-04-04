@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["jni-support"]
-jni-support = ["jni"]
+jni-support = ["jni", "brush-sfm/jni-support"]
 debug-validation = ["brush-train/debug-validation"]
 training = ["dep:brush-train", "dep:brush-dataset", "dep:brush-rerun", "brush-serde/export"]
 

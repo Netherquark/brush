@@ -20,7 +20,7 @@ private object ColumnMap {
     val ALT         = listOf("altitude(m)", "osd.altitude[ft]", "osd.height[ft]", "altitude_ft", "altitude(m)")
     val HEADING     = listOf("compass_heading(degrees)", "yaw", "yaw(deg)")
     val GIMBAL_PITCH= listOf("gimbal_pitch(degrees)", "gimbal.pitch", "gimbal_pitch", "gimbalpitchraw")
-    val VEL_N       = listOf("speed_n(m/s)", "osd.yspeed[mph]", "vertical_speed_mph", "velocityy(mps)")
+    val VEL_N       = listOf("speed_n(m/s)", "osd.yspeed[mph]", "velocityy(mps)")
     val VEL_E       = listOf("speed_e(m/s)", "osd.xspeed[mph]", "horizontal_speed_mph", "velocityx(mps)")
     val VEL_D       = listOf("speed_d(m/s)", "osd.zspeed[mph]", "velocityz(mps)", "vertical_speed_mph")
     val HDOP        = listOf("gps(accuracy)", "osd.gpslevel", "osd.gpsnum",    "satellites")
@@ -215,7 +215,7 @@ internal object CsvParser {
         if (isLitchi) return parseLitchiDateTime(raw)
         val value = raw.toDoubleOrNull() ?: return 0L
         return when {
-            header.contains("timestamps_ns") -> (value * 1_000_000.0).toLong()
+            header.contains("timestamps_ns") -> (value / 1_000.0).toLong()
             header.contains("time(millisecond)") -> (value * 1_000.0).toLong()
             else -> (value * 1_000.0).toLong()
         }
@@ -234,7 +234,9 @@ internal object CsvParser {
     private fun parseHdop(raw: String, header: String): Double {
         val value = raw.toDoubleOrNull() ?: return 99.0
         return when {
-            header.contains("gpslevel") -> (6.0 - value).coerceAtLeast(0.8)
+            header.contains("gpslevel") -> {
+                if (value <= 0.0) 99.0 else (6.0 - value).coerceIn(0.8, 5.0)
+            }
             header.contains("gpsnum") -> when {
                 value >= 20.0 -> 0.9
                 value >= 15.0 -> 1.5
@@ -249,7 +251,12 @@ internal object CsvParser {
     private fun parseFixType(raw: String, header: String): Int {
         val value = raw.toIntOrNull() ?: raw.toDoubleOrNull()?.toInt() ?: return 3
         return if (header.contains("gpslevel")) {
-            if (value >= 3) 3 else 0
+            when {
+                value >= 4 -> 3
+                value >= 2 -> 2
+                value >= 1 -> 1
+                else -> 0
+            }
         } else {
             value
         }

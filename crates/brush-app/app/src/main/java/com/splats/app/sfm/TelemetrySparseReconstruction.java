@@ -174,6 +174,11 @@ public final class TelemetrySparseReconstruction {
             out.write(resultJson.getBytes());
         }
 
+        if (!plyFile.exists() || plyFile.length() == 0L) {
+            Log.w(TAG, "BA completed without producing a non-empty PLY, writing telemetry fallback PLY");
+            writeFallbackPly(plyFile, sequence.getRecords());
+        }
+
         return new Result(plyFile, resultFile, pointIndex, matchCount);
     }
 
