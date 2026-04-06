@@ -37,9 +37,13 @@ public class FilePicker {
 
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-
-        // restrict to videos so users pick MP4/other video types
-        intent.setType("video/*");
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+                "video/*",
+                "application/octet-stream",
+                "application/ply",
+                "text/plain"
+        });
 
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
