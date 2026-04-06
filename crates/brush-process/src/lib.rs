@@ -120,7 +120,6 @@ pub fn create_process<
 
         // Wait until the devise is set.
         let device = DEVICE.wait().await.clone();
-
         let vfs = source.clone().into_vfs().await?;
         let vfs_counts = vfs.file_count();
 

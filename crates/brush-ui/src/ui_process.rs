@@ -1,4 +1,5 @@
 use crate::{UiMode, app::CameraSettings, camera_controls::CameraController};
+use std::collections::HashMap;
 use anyhow::Result;
 use brush_process::{message::ProcessMessage, slot::Slot};
 use brush_render::{MainBackend, camera::Camera, gaussian_splats::Splats};
@@ -20,6 +21,8 @@ struct ProcessHandle {
     control: mpsc::UnboundedSender<ControlMessage>,
     splat_view: Slot<Splats<MainBackend>>,
 }
+
+pub type PlatformCallback = Box<dyn Fn() + Send + Sync>;
 
 /// A thread-safe wrapper around the UI process.
 /// This allows the UI process to be accessed from multiple threads.
@@ -303,6 +306,16 @@ impl UiProcess {
     pub fn burn_device(&self) -> WgpuDevice {
         self.read().burn_device.clone()
     }
+
+    pub fn register_platform_action(&self, name: &str, callback: PlatformCallback) {
+        self.write().platform_actions.insert(name.to_string(), callback);
+    }
+
+    pub fn call_platform_action(&self, name: &str) {
+        if let Some(callback) = self.read().platform_actions.get(name) {
+            callback();
+        }
+    }
 }
 
 struct UiProcessInner {
@@ -320,6 +333,7 @@ struct UiProcessInner {
     session_reset_requested: bool,
     ui_ctx: egui::Context,
     burn_device: WgpuDevice,
+    platform_actions: HashMap<String, PlatformCallback>,
 }
 
 impl UiProcessInner {
@@ -345,6 +359,7 @@ impl UiProcessInner {
             session_reset_requested: false,
             burn_device,
             ui_ctx,
+            platform_actions: HashMap::new(),
         }
     }
 

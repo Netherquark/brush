@@ -124,55 +124,80 @@ pub struct ScenePanel {
 }
 
 impl ScenePanel {
-    fn draw_load_buttons(&mut self, ui: &mut egui::Ui) -> Option<DataSource> {
+    fn draw_load_buttons(&mut self, ui: &mut egui::Ui, process: &UiProcess) -> Option<DataSource> {
         let button_height = 28.0;
-        let button_color = Color32::from_rgb(70, 130, 180);
+        let button_width = 100.0;
+        let blue = Color32::from_rgb(70, 130, 180);
+        let green = Color32::from_rgb(60, 140, 90);
+        let purple = Color32::from_rgb(120, 80, 160);
         let mut load_option = None;
 
+        let button = |label: &str, color: Color32| {
+            Button::new(RichText::new(label).size(13.0))
+                .min_size(egui::vec2(button_width, button_height))
+                .fill(color)
+                .stroke(egui::Stroke::NONE)
+        };
+
+        // Row 1: File loading & video
         ui.horizontal(|ui| {
-            if ui
-                .add(
-                    Button::new(RichText::new("📁 File").size(13.0))
-                        .min_size(egui::vec2(80.0, button_height))
-                        .fill(button_color)
-                        .stroke(egui::Stroke::NONE),
-                )
-                .clicked()
-            {
+            if ui.add(button("📁 File", blue)).clicked() {
                 load_option = Some(DataSource::PickFile);
             }
-
-            let can_pick_dir = !cfg!(target_os = "android");
-            if can_pick_dir
-                && ui
-                    .add(
-                        Button::new(RichText::new("📂 Directory").size(13.0))
-                            .min_size(egui::vec2(100.0, button_height))
-                            .fill(button_color)
-                            .stroke(egui::Stroke::NONE),
-                    )
-                    .clicked()
-            {
-                load_option = Some(DataSource::PickDirectory);
+            if ui.add(button("🎬 Choose MP4", blue)).clicked() {
+                process.call_platform_action("choose_mp4");
             }
-
-            let can_url = !cfg!(target_os = "android");
-            if can_url
-                && ui
-                    .add(
-                        Button::new(RichText::new("🔗 URL").size(13.0))
-                            .min_size(egui::vec2(70.0, button_height))
-                            .fill(button_color)
-                            .stroke(egui::Stroke::NONE),
-                    )
-                    .clicked()
-            {
-                self.show_url_dialog = true;
+            if ui.add(button("🖼 Extract", blue)).clicked() {
+                process.call_platform_action("extract_frames");
             }
         });
 
+        ui.add_space(4.0);
+
+        // Row 2: CSV & telemetry processing
+        ui.horizontal(|ui| {
+            if ui.add(button("📄 Choose CSV", green)).clicked() {
+                process.call_platform_action("choose_csv");
+            }
+            if ui.add(button("🛰 Telemetry", green)).clicked() {
+                process.call_platform_action("telemetry");
+            }
+            if ui.add(button("📐 Pose Est.", green)).clicked() {
+                process.call_platform_action("pose_estimation");
+            }
+        });
+
+        ui.add_space(4.0);
+
+        // Row 3: Reconstruction & output
+        ui.horizontal(|ui| {
+            if ui.add(button("📦 Bundle", purple)).clicked() {
+                process.call_platform_action("bundle_alignment");
+            }
+            if ui.add(button("👁 Viewer", purple)).clicked() {
+                process.call_platform_action("open_in_viewer");
+            }
+            if ui.add(button("💾 Save PLY", purple)).clicked() {
+                process.call_platform_action("save_ply");
+            }
+        });
+
+        // Non-Android: keep directory and URL buttons
+        if !cfg!(target_os = "android") {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add(button("📂 Directory", blue)).clicked() {
+                    load_option = Some(DataSource::PickDirectory);
+                }
+                if ui.add(button("🔗 URL", blue)).clicked() {
+                    self.show_url_dialog = true;
+                }
+            });
+        }
+
         load_option
     }
+
 
     fn draw_url_dialog(&mut self, ui: &egui::Ui) -> Option<DataSource> {
         let mut load_option = None;
@@ -830,7 +855,7 @@ impl AppPane for ScenePanel {
         if show_welcome {
             let box_color = Color32::from_rgba_unmultiplied(40, 40, 45, 200);
             let text_color = Color32::from_rgb(150, 150, 150);
-            let box_width = 320.0;
+            let box_width = 360.0;
 
             // Center content vertically and horizontally
             ui.vertical(|ui| {
@@ -857,7 +882,7 @@ impl AppPane for ScenePanel {
                                     ui.add_space(16.0);
 
                                     // Load buttons
-                                    let load_option = self.draw_load_buttons(ui);
+                                    let load_option = self.draw_load_buttons(ui, process);
                                     if let Some(source) = load_option {
                                         self.start_loading(source, process);
                                     }

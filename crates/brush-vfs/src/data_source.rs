@@ -64,18 +64,16 @@ pub enum DataSourceError {
 impl DataSource {
     pub async fn into_vfs(self) -> Result<Arc<BrushVfs>, DataSourceError> {
         match self {
-            // ✅ FIXED SECTION
             Self::PickFile => {
-    let picked = rrfd::pick_file().await?;
-    log::info!("Got file: {}", picked.name);
+                let picked = rrfd::pick_file().await?;
+                log::info!("Got file: {}", picked.name);
 
-    let reader = BufReader::new(picked.reader);
+                let reader = BufReader::new(picked.reader);
 
-    Ok(Arc::new(
-        BrushVfs::from_reader(reader, Some(picked.name)).await?,
-    ))
-}
-
+                Ok(Arc::new(
+                    BrushVfs::from_reader(reader, Some(picked.name)).await?,
+                ))
+            }
 
             Self::PickDirectory => {
                 #[cfg(not(target_family = "wasm"))]

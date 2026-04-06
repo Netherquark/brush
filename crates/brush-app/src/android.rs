@@ -1,6 +1,5 @@
 use crate::shared::startup;
 use brush_ui::app::App;
-use brush_ui::ui_process::UiProcess;
 use std::os::raw::c_void;
 use std::sync::Arc;
 
@@ -10,6 +9,15 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jni::sys::
     let vm_ref = Arc::new(vm);
     rrfd::android::jni_initialize(vm_ref);
     jni::sys::JNI_VERSION_1_6
+}
+
+#[cfg(target_os = "android")]
+fn call_java_static(method: &str) {
+    let vm = rrfd::android::get_jvm().expect("JVM not initialized");
+    let mut env = vm.attach_current_thread().unwrap();
+    let class = env.find_class("com/splats/app/MainActivity").unwrap();
+    env.call_static_method(class, method, "()V", &[])
+        .unwrap_or_else(|e| panic!("Failed to call {method}: {e:?}"));
 }
 
 #[unsafe(no_mangle)]
@@ -36,7 +44,32 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
                     wgpu_options,
                     ..Default::default()
                 },
-                Box::new(|cc| Ok(Box::new(App::new(cc, None)))),
+                Box::new(|cc| {
+                    let app = App::new(cc, None);
+
+                    #[cfg(target_os = "android")]
+                    {
+                        let ctx = app.context();
+                        ctx.register_platform_action("choose_mp4",
+                            Box::new(|| call_java_static("chooseMp4")));
+                        ctx.register_platform_action("extract_frames",
+                            Box::new(|| call_java_static("extractFrames")));
+                        ctx.register_platform_action("choose_csv",
+                            Box::new(|| call_java_static("chooseCsv")));
+                        ctx.register_platform_action("telemetry",
+                            Box::new(|| call_java_static("runTelemetry")));
+                        ctx.register_platform_action("pose_estimation",
+                            Box::new(|| call_java_static("runPoseEstimation")));
+                        ctx.register_platform_action("bundle_alignment",
+                            Box::new(|| call_java_static("runBundleAlignment")));
+                        ctx.register_platform_action("open_in_viewer",
+                            Box::new(|| call_java_static("openInViewer")));
+                        ctx.register_platform_action("save_ply",
+                            Box::new(|| call_java_static("savePly")));
+                    }
+
+                    Ok(Box::new(app))
+                }),
             )
             .unwrap();
         });

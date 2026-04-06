@@ -56,8 +56,79 @@ public class MainActivity extends GameActivity {
     @SuppressLint("StaticFieldLeak")
     public static MainActivity instance;
 
-    private static final int REQUEST_CODE_EXTRACT_FRAMES = 1001;
-    private static final int REQUEST_CODE_PICK_CSV = 1002;
+    // ── Request codes ─────────────────────────────────────────────────────────
+    private static final int REQUEST_CODE_CHOOSE_MP4         = 1000;
+    private static final int REQUEST_CODE_EXTRACT_FRAMES     = 1001;
+    private static final int REQUEST_CODE_PICK_CSV           = 1002;
+
+    // ── JNI-callable static methods (called from Rust via platform callbacks) ─
+
+    /** Button 2 – just pick an MP4, store it, no extraction yet */
+    public static void chooseMp4() {
+        if (instance == null) return;
+        instance.runOnUiThread(() -> {
+            Log.i(TAG, "chooseMp4 from Rust");
+            FilePicker.startFilePicker(REQUEST_CODE_CHOOSE_MP4);
+        });
+    }
+
+    /** Button 3 – pick an MP4 AND immediately extract frames */
+    public static void extractFrames() {
+        if (instance == null) return;
+        instance.runOnUiThread(() -> {
+            Log.i(TAG, "extractFrames from Rust");
+            FilePicker.startFilePicker(REQUEST_CODE_EXTRACT_FRAMES);
+        });
+    }
+
+    /** Button 4 – pick a CSV telemetry log */
+    public static void chooseCsv() {
+        if (instance == null) return;
+        instance.runOnUiThread(() -> {
+            Log.i(TAG, "chooseCsv from Rust");
+            FilePicker.startCsvPicker(REQUEST_CODE_PICK_CSV);
+        });
+    }
+
+    /** Button 5 – run full telemetry preprocess (CSV + video must already be chosen) */
+    public static void runTelemetry() {
+        if (instance == null) return;
+        instance.runOnUiThread(() -> {
+            Log.i(TAG, "runTelemetry from Rust");
+            instance.startTelemetryPreprocessIfReady();
+        });
+    }
+
+    /** Button 6 – pose estimation stub */
+    public static void runPoseEstimation() {
+        if (instance == null) return;
+        instance.runOnUiThread(() ->
+            Toast.makeText(instance, "Pose estimation: coming soon", Toast.LENGTH_SHORT).show());
+    }
+
+    /** Button 7 – bundle alignment stub */
+    public static void runBundleAlignment() {
+        if (instance == null) return;
+        instance.runOnUiThread(() ->
+            Toast.makeText(instance, "Bundle alignment: coming soon", Toast.LENGTH_SHORT).show());
+    }
+
+    /** Button 8 – open latest result in viewer stub */
+    public static void openInViewer() {
+        if (instance == null) return;
+        instance.runOnUiThread(() ->
+            Toast.makeText(instance, "Open in viewer: coming soon", Toast.LENGTH_SHORT).show());
+    }
+
+    /** Button 9 – save .ply to disk stub */
+    public static void savePly() {
+        if (instance == null) return;
+        instance.runOnUiThread(() ->
+            Toast.makeText(instance, "Save PLY: coming soon", Toast.LENGTH_SHORT).show());
+    }
+
+
+    // ── Instance fields ───────────────────────────────────────────────────────
     private static final String TAG = "MainActivity";
 
     private File selectedCsvFile = null;
@@ -102,13 +173,6 @@ public class MainActivity extends GameActivity {
         FilePicker.Register(this);
     }
 
-    public static void startTelemetryPickerFlow() {
-        if (instance == null) return;
-        instance.runOnUiThread(() -> {
-            Log.i(TAG, "Starting telemetry picker flow from Rust");
-            FilePicker.startCsvPicker(REQUEST_CODE_PICK_CSV);
-        });
-    }
 
 
     @Override
@@ -125,134 +189,116 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
 
+        // ── CSV picker (Button 4: Choose CSV) ───────────────────────────────
         if (requestCode == REQUEST_CODE_PICK_CSV) {
-            try {
-                if (resultCode == Activity.RESULT_OK && data != null) {
-                    Uri uri = data.getData();
-                    if (uri != null) {
-                        try {
-                            int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
-                            if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0) {
-                                takeFlags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
-                            }
-                            getContentResolver().takePersistableUriPermission(uri, takeFlags);
-                        } catch (Exception e) {
-                            Log.i(TAG, "Could not take persistable permission: " + e);
-                        }
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                Uri uri = data.getData();
+                if (uri != null) {
+                    try {
+                        int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                        if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0)
+                            takeFlags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+                        getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                    } catch (Exception e) {
+                        Log.i(TAG, "Could not take persistable permission: " + e);
+                    }
 
-                        String displayName = queryDisplayName(uri);
-                        if (!isCsvName(displayName)) {
-                            Log.w(TAG, "Rejected non-CSV telemetry file: " + displayName);
-                            Toast.makeText(this,
-                                    "Only CSV telemetry logs are supported",
-                                    Toast.LENGTH_SHORT).show();
-                            return;
-                        }
-
+                    String displayName = queryDisplayName(uri);
+                    if (!isCsvName(displayName)) {
+                        Toast.makeText(this, "Only CSV telemetry logs are supported",
+                                Toast.LENGTH_SHORT).show();
+                    } else {
                         selectedCsvFile = ensureLocalFileForUri(uri, "telemetry_csv_", ".csv");
-
                         if (selectedCsvFile != null) {
-                            Toast.makeText(this,
-                                    "Telemetry CSV selected: " + selectedCsvFile.getName(),
+                            Toast.makeText(this, "CSV selected: " + selectedCsvFile.getName(),
                                     Toast.LENGTH_SHORT).show();
-                            
-                            // Now pick the video
-                            FilePicker.startFilePicker(REQUEST_CODE_EXTRACT_FRAMES);
                         } else {
-                            Toast.makeText(this,
-                                    "Failed to read telemetry CSV",
+                            Toast.makeText(this, "Failed to read telemetry CSV",
                                     Toast.LENGTH_SHORT).show();
                         }
                     }
                 }
-            } catch (Exception e) {
-                Log.e(TAG, "CSV pick error", e);
             }
-
+            // Do NOT call FilePicker.onPicked — this never goes through Rust
             super.onActivityResult(requestCode, resultCode, data);
             return;
         }
 
-        // Keep original handling for the app's FilePicker-based flows
-        if (requestCode == FilePicker.REQUEST_CODE_PICK_FILE || requestCode == REQUEST_CODE_EXTRACT_FRAMES) {
-
-            int fd = -1;
-
-            try {
-
-                if (resultCode == Activity.RESULT_OK && data != null) {
-
-                    Uri uri = data.getData();
-
-                    if (uri != null) {
-                        // Persist read permission so MediaMetadataRetriever can read later
-                        try {
-                            int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
-                            if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0) {
-                                takeFlags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
-                            }
-                            getContentResolver().takePersistableUriPermission(uri, takeFlags);
-                        } catch (Exception e) {
-                            // Not all URIs allow persistable permission; ignore safely
-                            Log.i("MainActivity", "Could not take persistable permission: " + e);
-                        }
-
-                        // Try to open FD for the native/Rust code as before.
-                        ParcelFileDescriptor parcelFileDescriptor =
-                                getContentResolver().openFileDescriptor(uri, "r");
-
-                        if (parcelFileDescriptor != null) {
-                            fd = parcelFileDescriptor.detachFd();
-
-                            // IMPORTANT: first kick off Java extraction (only for our extract request),
-                            // then call FilePicker.onPicked so existing native logic still runs.
-                            if (requestCode == REQUEST_CODE_EXTRACT_FRAMES) {
-                                VideoFrameExtractor.extractFrames(this, uri, new VideoFrameExtractor.ExtractionCallback() {
-                                    @Override
-                                    public void onFinished() {
-                                        startTelemetryPreprocessIfReady();
-                                    }
-
-                                    @Override
-                                    public void onFailure(Exception e) {
-                                        Log.e(TAG, "Frame extraction failed", e);
-                                    }
-                                });
-                            }
-
-                            // keep original behavior for native side
-                            FilePicker.onPicked(uri, fd);
-
-                            selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
-                            return;
-                        } else {
-                            // If no parcelFileDescriptor, still allow extraction if this was the extract request
-                            if (requestCode == REQUEST_CODE_EXTRACT_FRAMES) {
-                                VideoFrameExtractor.extractFrames(this, uri, new VideoFrameExtractor.ExtractionCallback() {
-                                    @Override
-                                    public void onFinished() {
-                                        startTelemetryPreprocessIfReady();
-                                    }
-
-                                    @Override
-                                    public void onFailure(Exception e) {
-                                        Log.e(TAG, "Frame extraction failed", e);
-                                    }
-                                });
-                                // call native with invalid fd to preserve previous behavior
-                                FilePicker.onPicked(uri, -1);
-                                selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
-                                return;
-                            }
-                        }
+        // ── Choose MP4 only (Button 2: Choose MP4) ───────────────────────
+        if (requestCode == REQUEST_CODE_CHOOSE_MP4) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                Uri uri = data.getData();
+                if (uri != null) {
+                    selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
+                    if (selectedVideoFile != null) {
+                        Toast.makeText(this, "MP4 selected: " + selectedVideoFile.getName(),
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(this, "Failed to read MP4", Toast.LENGTH_SHORT).show();
                     }
                 }
-
-            } catch (Exception e) {
-                Log.e("MainActivity", "onActivityResult error", e);
             }
+            // Do NOT call FilePicker.onPicked — this never goes through Rust
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
 
-            // Ensure the native picker is notified in all failure paths, to match previous behavior
+        // ── Extract frames (Button 3: Extract) ───────────────────────────
+        if (requestCode == REQUEST_CODE_EXTRACT_FRAMES) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                Uri uri = data.getData();
+                if (uri != null) {
+                    selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
+                    VideoFrameExtractor.extractFrames(this, uri, new VideoFrameExtractor.ExtractionCallback() {
+                        @Override
+                        public void onFinished() {
+                            Toast.makeText(MainActivity.this, "Frames extracted!",
+                                    Toast.LENGTH_SHORT).show();
+                        }
+
+                        @Override
+                        public void onFailure(Exception e) {
+                            Log.e(TAG, "Frame extraction failed", e);
+                            Toast.makeText(MainActivity.this, "Extraction failed: " + e.getMessage(),
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
+            } else {
+                Toast.makeText(this, "No video selected", Toast.LENGTH_SHORT).show();
+            }
+            // Do NOT call FilePicker.onPicked — this never goes through Rust
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+
+        // ── Regular Rust file picker (Button 1: File .ply viewer) ────────────
+        if (requestCode == FilePicker.REQUEST_CODE_PICK_FILE) {
+            int fd = -1;
+            try {
+                if (resultCode == Activity.RESULT_OK && data != null) {
+                    Uri uri = data.getData();
+                    if (uri != null) {
+                        try {
+                            int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                            if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0)
+                                takeFlags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+                            getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                        } catch (Exception e) {
+                            Log.i(TAG, "Could not take persistable permission: " + e);
+                        }
+                        ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r");
+                        if (pfd != null) {
+                            fd = pfd.detachFd();
+                        }
+                        FilePicker.onPicked(uri, fd);
+                        super.onActivityResult(requestCode, resultCode, data);
+                        return;
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "onActivityResult error", e);
+            }
             FilePicker.onPicked(null, -1);
         }
 

@@ -40,6 +40,10 @@ pub fn jni_initialize(vm: Arc<jni::JavaVM>) {
     *VM.write().unwrap() = Some(vm);
 }
 
+pub fn get_jvm() -> Option<Arc<jni::JavaVM>> {
+    VM.read().unwrap().clone()
+}
+
 pub(crate) async fn pick_file() -> std::io::Result<(File, String)> {
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
 

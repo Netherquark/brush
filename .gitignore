@@ -46,3 +46,4 @@ local.properties
 telemetry_sparse.ply
 **/telemetry_sparse.ply
 .codex
+.env
