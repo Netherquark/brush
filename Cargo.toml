@@ -4,6 +4,7 @@ members = [
     "crates/brush-app",
     "crates/brush-bench-test",
     "crates/brush-cli",
+    "crates/brush-sfm",
     "crates/brush-dataset",
     "crates/brush-kernel",
     "crates/brush-prefix-sum",
@@ -155,6 +156,12 @@ emath = { git = "https://github.com/emilk/egui", rev = "c97c065a575ec6e657bb4287
 # Uncomment this to use local wgpu and naga.
 # wgpu.path = "../wgpu/wgpu"
 # naga.path = "../wgpu/naga"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [profile.dev]
 opt-level = 1

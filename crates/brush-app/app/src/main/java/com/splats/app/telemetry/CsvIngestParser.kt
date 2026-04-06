@@ -10,22 +10,62 @@ import android.util.Log
 
 /**
  * Maps canonical field names to the two known vendor header variants.
- * First entry = DJI standard export.  Second entry = Litchi export.
+ * DJI aliases are checked only on the DJI pass.
+ * Litchi aliases are checked only on the Litchi pass.
  */
+private data class HeaderAliases(
+    val dji: List<String>,
+    val litchi: List<String> = emptyList()
+)
+
 private object ColumnMap {
-    // canonical        DJI header                    Litchi header
-    val TIMESTAMP   = listOf("time(millisecond)",     "datetime(utc)")
-    val LAT         = listOf("latitude",              "gps(0)[latitude]")
-    val LON         = listOf("longitude",             "gps(0)[longitude]")
-    val ALT         = listOf("altitude(m)",           "altitude(m)")
-    val HEADING     = listOf("compass_heading(degrees)", "yaw(deg)")
-    val GIMBAL_PITCH= listOf("gimbal_pitch(degrees)", "gimbalpitchraw")
-    val VEL_N       = listOf("speed_n(m/s)",          "velocityy(mps)")
-    val VEL_E       = listOf("speed_e(m/s)",          "velocityx(mps)")
-    val VEL_D       = listOf("speed_d(m/s)",          "velocityz(mps)")
-    val HDOP        = listOf("gps(accuracy)",         "satellites")   // satellites used as proxy for Litchi
-    val FIX_TYPE    = listOf("gps(fixType)",          "fixType")
-    val SATELLITES  = listOf("satellites",            "satellites")
+    val TIMESTAMP    = HeaderAliases(
+        dji = listOf("time(millisecond)", "timestamps_ns"),
+        litchi = listOf("datetime(utc)")
+    )
+    val LAT          = HeaderAliases(
+        dji = listOf("latitude", "osd.latitude"),
+        litchi = listOf("gps(0)[latitude]")
+    )
+    val LON          = HeaderAliases(
+        dji = listOf("longitude", "osd.longitude"),
+        litchi = listOf("gps(0)[longitude]")
+    )
+    val ALT          = HeaderAliases(
+        dji = listOf("altitude(m)", "osd.altitude[ft]", "osd.height[ft]", "altitude_ft"),
+        litchi = listOf("altitude(m)")
+    )
+    val HEADING      = HeaderAliases(
+        dji = listOf("compass_heading(degrees)", "yaw"),
+        litchi = listOf("yaw(deg)")
+    )
+    val GIMBAL_PITCH = HeaderAliases(
+        dji = listOf("gimbal_pitch(degrees)", "gimbal.pitch", "gimbal_pitch"),
+        litchi = listOf("gimbalpitchraw")
+    )
+    val VEL_N        = HeaderAliases(
+        dji = listOf("speed_n(m/s)", "osd.yspeed[mph]"),
+        litchi = listOf("velocityy(mps)")
+    )
+    val VEL_E        = HeaderAliases(
+        dji = listOf("speed_e(m/s)", "osd.xspeed[mph]"),
+        litchi = listOf("velocityx(mps)")
+    )
+    val VEL_D        = HeaderAliases(
+        dji = listOf("speed_d(m/s)", "osd.zspeed[mph]", "vertical_speed_mph"),
+        litchi = listOf("velocityz(mps)")
+    )
+    val HDOP         = HeaderAliases(
+        dji = listOf("gps(accuracy)", "osd.gpslevel", "osd.gpsnum", "satellites")
+    )
+    val FIX_TYPE     = HeaderAliases(
+        dji = listOf("gps(fixType)", "osd.gpslevel"),
+        litchi = listOf("fixType")
+    )
+    val SATELLITES   = HeaderAliases(
+        dji = listOf("satellites", "osd.gpsnum"),
+        litchi = listOf("satellites")
+    )
 }
 
 // ─── CSV Ingest ───────────────────────────────────────────────────────────────
@@ -100,7 +140,27 @@ internal object CsvIngest {
     }
 
     private fun splitCsvLine(line: String): List<String> =
-        line.split(',').map { it.trim() }
+        buildList {
+            val current = StringBuilder()
+            var inQuotes = false
+
+            for (ch in line) {
+                when (ch) {
+                    '"' -> inQuotes = !inQuotes
+                    ',' -> {
+                        if (inQuotes) {
+                            current.append(ch)
+                        } else {
+                            add(current.toString().trim())
+                            current.setLength(0)
+                        }
+                    }
+                    else -> current.append(ch)
+                }
+            }
+
+            add(current.toString().trim())
+        }
 
 }
 
@@ -153,10 +213,9 @@ internal object CsvParser {
     ): List<TelRow> {
         val lower = headers.map { normalizeHeader(it) }
 
-        fun resolve(aliases: List<String>): Int? {
-            val preferred = aliases.getOrNull(vendorIndex)
-            val ordered = if (preferred != null) listOf(preferred) + aliases else aliases
-            for (alias in ordered) {
+        fun resolve(aliases: HeaderAliases): Int? {
+            val candidates = if (vendorIndex == 0) aliases.dji else aliases.litchi
+            for (alias in candidates) {
                 val idx = lower.indexOf(normalizeHeader(alias))
                 if (idx >= 0) return idx
             }
@@ -177,32 +236,88 @@ internal object CsvParser {
         val iFixType    = resolve(ColumnMap.FIX_TYPE)
         val iSatellites = resolve(ColumnMap.SATELLITES)
 
-        // Detect whether we're reading a Litchi file (datetime vs millisecond).
-        val isLitchi = lower[iTs].contains("datetime")
+        val tsHeader = lower[iTs]
+        val altHeader = lower[iAlt]
+        val velNHeader = lower[iVelN]
+        val velEHeader = lower[iVelE]
+        val velDHeader = lower[iVelD]
+        val hdopHeader = lower[iHdop]
+        val fixTypeHeader = iFixType?.let { lower[it] }
+
+        // Detect whether we're reading a Litchi file (datetime vs DJI timestamps).
+        val isLitchi = tsHeader.contains("datetime")
 
         return dataRows.mapNotNull { cols ->
             runCatching {
-                val tsUs = if (isLitchi) {
-                    parseLitchiDateTime(cols.getOrElse(iTs) { "" })
-                } else {
-                    // DJI: milliseconds since epoch → convert to microseconds
-                    cols.getOrElse(iTs) { "0" }.toLong() * 1_000L
-                }
+                val tsUs = parseTimestampUs(cols.getOrElse(iTs) { "" }, tsHeader, isLitchi)
                 TelRow(
                     timestampUs = tsUs,
                     lat         = cols.getOrElse(iLat)     { "0" }.toDouble(),
                     lon         = cols.getOrElse(iLon)     { "0" }.toDouble(),
-                    altM        = cols.getOrElse(iAlt)     { "0" }.toDouble(),
+                    altM        = parseAltitudeMeters(cols.getOrElse(iAlt) { "0" }, altHeader),
                     headingDeg  = cols.getOrElse(iHeading) { "0" }.toDouble(),
                     gimbalPitch = cols.getOrElse(iPitch)   { "0" }.toDouble(),
-                    velN        = cols.getOrElse(iVelN)    { "0" }.toDouble(),
-                    velE        = cols.getOrElse(iVelE)    { "0" }.toDouble(),
-                    velD        = cols.getOrElse(iVelD)    { "0" }.toDouble(),
-                    hdop        = cols.getOrElse(iHdop)    { "0" }.toDouble(),
-                    fixType     = iFixType?.let { cols.getOrElse(it) { "0" }.toInt() } ?: 3,
+                    velN        = parseSpeedMps(cols.getOrElse(iVelN) { "0" }, velNHeader),
+                    velE        = parseSpeedMps(cols.getOrElse(iVelE) { "0" }, velEHeader),
+                    velD        = parseSpeedMps(cols.getOrElse(iVelD) { "0" }, velDHeader),
+                    hdop        = parseHdop(cols.getOrElse(iHdop) { "0" }, hdopHeader),
+                    fixType     = iFixType?.let {
+                        parseFixType(cols.getOrElse(it) { "0" }, fixTypeHeader ?: "")
+                    } ?: 3,
                     satellites  = iSatellites?.let { cols.getOrElse(it) { "0" }.toInt() } ?: 0
                 )
             }.getOrNull()   // malformed rows are dropped; row validator counts them
+        }
+    }
+
+    private fun parseTimestampUs(raw: String, header: String, isLitchi: Boolean): Long {
+        if (isLitchi) return parseLitchiDateTime(raw)
+        val value = raw.toDoubleOrNull() ?: return 0L
+        return when {
+            header.contains("timestamps_ns") -> (value / 1_000.0).toLong()
+            header.contains("time(millisecond)") -> (value * 1_000.0).toLong()
+            else -> (value * 1_000.0).toLong()
+        }
+    }
+
+    private fun parseAltitudeMeters(raw: String, header: String): Double {
+        val value = raw.toDoubleOrNull() ?: return 0.0
+        return if (header.contains("[ft]") || header.contains("_ft")) value * 0.3048 else value
+    }
+
+    private fun parseSpeedMps(raw: String, header: String): Double {
+        val value = raw.toDoubleOrNull() ?: return 0.0
+        return if (header.contains("[mph]")) value * 0.44704 else value
+    }
+
+    private fun parseHdop(raw: String, header: String): Double {
+        val value = raw.toDoubleOrNull() ?: return 99.0
+        return when {
+            header.contains("gpslevel") -> {
+                if (value <= 0.0) 99.0 else (6.0 - value).coerceIn(0.8, 5.0)
+            }
+            header.contains("gpsnum") -> when {
+                value >= 20.0 -> 0.9
+                value >= 15.0 -> 1.5
+                value >= 10.0 -> 2.5
+                value > 0.0 -> 4.5
+                else -> 99.0
+            }
+            else -> value
+        }
+    }
+
+    private fun parseFixType(raw: String, header: String): Int {
+        val value = raw.toIntOrNull() ?: raw.toDoubleOrNull()?.toInt() ?: return 3
+        return if (header.contains("gpslevel")) {
+            when {
+                value >= 4 -> 3
+                value >= 2 -> 2
+                value >= 1 -> 1
+                else -> 0
+            }
+        } else {
+            value
         }
     }
 

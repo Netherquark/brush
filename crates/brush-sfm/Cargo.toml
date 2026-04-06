@@ -1,0 +1,25 @@
+[package]
+name = "brush-sfm"
+edition.workspace = true
+version.workspace = true
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "brush_sfm"
+crate-type = ["rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json = { workspace = true, features = ["alloc"] }
+anyhow.workspace = true
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+jni = { version = "0.21", optional = true }
+
+[features]
+default = []
+jni-support = ["dep:jni"]
+
+[lints]
+workspace = true

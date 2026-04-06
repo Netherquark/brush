@@ -3,6 +3,9 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+import java.util.Locale
+import java.util.Properties
+
 android {
     ndkVersion "25.2.9519653"
     compileSdk 34
@@ -39,6 +42,8 @@ android {
     namespace 'com.splats.app'
 }
 
+ext.requiredNdkVersion = "25.2.9519653"
+
 dependencies {
 
     implementation 'androidx.appcompat:appcompat:1.7.0'
@@ -57,7 +62,7 @@ dependencies {
 
     // Kotlin + coroutines for telemetry pipeline
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
 
     // JSON output for telemetry
     implementation "com.google.code.gson:gson:2.10.1"
@@ -67,4 +72,198 @@ dependencies {
 
     // To use the Games Text Input Library
     //implementation "androidx.games:games-text-input:1.1.0"
+}
+
+def ndkHostTag(File ndkDir) {
+    def osName = System.getProperty("os.name").toLowerCase(Locale.ROOT)
+    def arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT)
+    if (osName.contains("mac")) {
+        def armTag = "darwin-arm64"
+        def x86Tag = "darwin-x86_64"
+        def prebuiltDir = new File(ndkDir, "toolchains/llvm/prebuilt")
+        if ((arch.contains("aarch64") || arch.contains("arm")) && new File(prebuiltDir, armTag).exists()) {
+            return armTag
+        }
+        if (new File(prebuiltDir, x86Tag).exists()) {
+            return x86Tag
+        }
+        return armTag
+    }
+    if (osName.contains("linux")) {
+        return "linux-x86_64"
+    }
+    if (osName.contains("windows")) {
+        return "windows-x86_64"
+    }
+    throw new GradleException("Unsupported host OS for NDK: ${osName}")
+}
+
+def localProperties() {
+    def props = new Properties()
+    def localPropsFile = rootProject.file("local.properties")
+    if (localPropsFile.exists()) {
+        localPropsFile.withInputStream { stream ->
+            props.load(stream)
+        }
+    }
+    return props
+}
+
+def findSdkDir() {
+    def localSdk = localProperties().getProperty("sdk.dir")
+    if (localSdk != null) {
+        def sdkDir = new File(localSdk)
+        if (sdkDir.isDirectory()) {
+            return sdkDir
+        }
+    }
+
+    def envSdk = System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME")
+    if (envSdk != null) {
+        def sdkDir = new File(envSdk)
+        if (sdkDir.isDirectory()) {
+            return sdkDir
+        }
+    }
+
+    throw new GradleException(
+        "Android SDK not found. Set sdk.dir in local.properties or ANDROID_SDK_ROOT."
+    )
+}
+
+def findNdkDir() {
+    def props = localProperties()
+    def explicitNdk = findProperty("ndk.dir") ?: props.getProperty("ndk.dir") ?: System.getenv("ANDROID_NDK_HOME")
+    if (explicitNdk != null) {
+        def ndkDir = new File(explicitNdk.toString())
+        if (ndkDir.isDirectory()) {
+            return ndkDir
+        }
+    }
+
+    def sdkDir = findSdkDir()
+    def versionedNdk = new File(sdkDir, "ndk/${project.ext.requiredNdkVersion}")
+    if (versionedNdk.isDirectory()) {
+        return versionedNdk
+    }
+
+    def bundleNdk = new File(sdkDir, "ndk-bundle")
+    if (bundleNdk.isDirectory()) {
+        return bundleNdk
+    }
+
+    def installedVersions = new File(sdkDir, "ndk").list() ?: [] as String[]
+    def installedList = installedVersions ? installedVersions.join(", ") : "none"
+    throw new GradleException(
+        "Required NDK ${project.ext.requiredNdkVersion} not found under ${sdkDir}. Installed NDK versions: ${installedList}. " +
+        "Install NDK ${project.ext.requiredNdkVersion} or set ndk.dir/ANDROID_NDK_HOME to the correct path."
+    )
+}
+
+def findNdkDirOrNull() {
+    try {
+        return findNdkDir()
+    } catch (GradleException ignored) {
+        return null
+    }
+}
+
+def findCargo() {
+    def configuredPath = findProperty("CARGO_PATH") ?: localProperties().getProperty("CARGO_PATH")
+    if (configuredPath != null) {
+        def configuredCargo = new File(configuredPath.toString())
+        if (configuredCargo.canExecute()) {
+            return configuredCargo.absolutePath
+        }
+        throw new GradleException("Configured CARGO_PATH does not point to an executable cargo binary: ${configuredCargo}")
+    }
+
+    def candidates = [
+        new File(System.getProperty("user.home"), ".cargo/bin/cargo"),
+        new File("/usr/local/bin/cargo"),
+        new File("/usr/bin/cargo"),
+        new File("/opt/homebrew/bin/cargo"),
+    ]
+    def cargoBinary = candidates.find { it.canExecute() }
+    if (cargoBinary != null) {
+        return cargoBinary.absolutePath
+    }
+
+    throw new GradleException(
+        "cargo not found. Set CARGO_PATH in local.properties or install Rust with rustup and restart Android Studio."
+    )
+}
+
+def workspaceDir = rootProject.projectDir.parentFile.parentFile
+
+tasks.register("buildRustNativeBa") {
+    group = "build"
+    description = "Cross-compile brush-process for arm64-v8a"
+    def rustOutput = new File(projectDir, "src/main/jniLibs/arm64-v8a/libbrush_process.so")
+
+    inputs.files(fileTree(workspaceDir) {
+        include "Cargo.toml"
+        include "Cargo.lock"
+        include "crates/brush-process/**"
+        include "crates/brush-sfm/**"
+    })
+    inputs.property("requiredNdkVersion", project.ext.requiredNdkVersion)
+    outputs.file(rustOutput)
+
+    doLast {
+        def cargoPath = findCargo()
+        def ndkDir = findNdkDirOrNull()
+        if (ndkDir == null) {
+            if (rustOutput.isFile()) {
+                logger.lifecycle(
+                    "NDK ${project.ext.requiredNdkVersion} not found; reusing existing ${rustOutput.absolutePath}."
+                )
+                return
+            }
+            throw new GradleException(
+                "NDK ${project.ext.requiredNdkVersion} is required to build ${rustOutput.name}, " +
+                "and no existing prebuilt library was found at ${rustOutput.absolutePath}."
+            )
+        }
+        def hostTag = ndkHostTag(ndkDir)
+        def clangBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/aarch64-linux-android33-clang")
+        def arBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/llvm-ar")
+
+        if (!clangBin.isFile()) {
+            throw new GradleException("NDK clang not found at ${clangBin}")
+        }
+        if (!arBin.isFile()) {
+            throw new GradleException("NDK llvm-ar not found at ${arBin}")
+        }
+
+        exec {
+            environment "ANDROID_NDK_HOME", ndkDir.absolutePath
+            environment "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", clangBin.absolutePath
+            environment "CC_aarch64_linux_android", clangBin.absolutePath
+            environment "CC_aarch64-linux-android", clangBin.absolutePath
+            environment "CXX_aarch64_linux_android", clangBin.absolutePath
+            environment "CXX_aarch64-linux-android", clangBin.absolutePath
+            environment "AR_aarch64_linux_android", arBin.absolutePath
+            environment "AR_aarch64-linux-android", arBin.absolutePath
+            environment "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR", arBin.absolutePath
+            environment "PATH", "${new File(cargoPath).parent}${File.pathSeparator}${System.getenv("PATH") ?: ""}"
+            commandLine(
+                cargoPath, "build",
+                "--release",
+                "--target", "aarch64-linux-android",
+                "--package", "brush-process",
+                "--features", "jni-support"
+            )
+            workingDir = workspaceDir
+        }
+
+        copy {
+            from(new File(workspaceDir, "target/aarch64-linux-android/release/libbrush_process.so"))
+            into(rustOutput.parentFile)
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("buildRustNativeBa")
 }
