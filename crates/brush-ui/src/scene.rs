@@ -121,6 +121,14 @@ pub struct ScenePanel {
     #[cfg(feature = "training")]
     #[serde(skip)]
     settings_popup: Option<Arc<Mutex<SettingsPopup>>>,
+    #[serde(skip)]
+    selected_mp4: Option<String>,
+    #[serde(skip)]
+    selected_csv: Option<String>,
+    #[serde(skip)]
+    is_extracting: bool,
+    #[serde(skip)]
+    telemetry_running: bool,
 }
 
 impl ScenePanel {
@@ -144,10 +152,14 @@ impl ScenePanel {
             if ui.add(button("📁 File", blue)).clicked() {
                 load_option = Some(DataSource::PickFile);
             }
-            if ui.add(button("🎬 Choose MP4", blue)).clicked() {
+            let mp4_label = self.selected_mp4.as_ref()
+                .map(|s| format!("🎬 {}", s))
+                .unwrap_or_else(|| "🎬 Choose MP4".to_string());
+            if ui.add(button(&mp4_label, blue)).clicked() {
                 process.call_platform_action("choose_mp4");
             }
-            if ui.add(button("🖼 Extract", blue)).clicked() {
+            let extract_label = if self.is_extracting { "🖼 Extracting..." } else { "🖼 Extract" };
+            if ui.add(button(extract_label, blue)).clicked() {
                 process.call_platform_action("extract_frames");
             }
         });
@@ -156,11 +168,16 @@ impl ScenePanel {
 
         // Row 2: CSV & telemetry processing
         ui.horizontal(|ui| {
-            if ui.add(button("📄 Choose CSV", green)).clicked() {
+            let csv_label = self.selected_csv.as_ref()
+                .map(|s| format!("📄 {}", s))
+                .unwrap_or_else(|| "📄 Choose CSV".to_string());
+            if ui.add(button(&csv_label, green)).clicked() {
                 process.call_platform_action("choose_csv");
             }
-            if ui.add(button("🛰 Telemetry", green)).clicked() {
+            let telemetry_label = if self.telemetry_running { "🛰 Running..." } else { "🛰 Telemetry" };
+            if ui.add(button(telemetry_label, green)).clicked() {
                 process.call_platform_action("telemetry");
+                self.telemetry_running = true;
             }
             if ui.add(button("📐 Pose Est.", green)).clicked() {
                 process.call_platform_action("pose_estimation");
@@ -526,6 +543,43 @@ impl ScenePanel {
     }
 }
 
+impl ScenePanel {
+    fn on_update(&mut self, process: &UiProcess) {
+        for event in process.take_platform_events() {
+            match event {
+                crate::ui_process::PlatformEvent::FileSelected {
+                    event_type,
+                    path: _,
+                    name,
+                } => {
+                    if event_type == "mp4_picked" {
+                        self.selected_mp4 = Some(name);
+                    } else if event_type == "csv_picked" {
+                        self.selected_csv = Some(name);
+                    }
+                }
+                crate::ui_process::PlatformEvent::ProcessComplete {
+                    event_type,
+                    success: _,
+                    data,
+                } => {
+                    match event_type.as_str() {
+                        "extraction_complete" => {
+                            self.is_extracting = false;
+                        }
+                        "telemetry_complete" => {
+                            self.telemetry_running = false;
+                            // Automatically load the resulting PLY
+                            self.start_loading(DataSource::Path(data), process);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl AppPane for ScenePanel {
     fn title(&self) -> egui::WidgetText {
         match (&self.source_type, &self.source_name) {
@@ -552,6 +606,10 @@ impl AppPane for ScenePanel {
             (None, Some(n)) => n.clone().into(),
             _ => "Scene".into(),
         }
+    }
+
+    fn on_update(&mut self, process: &UiProcess) {
+        self.on_update(process);
     }
 
     fn top_bar_right_ui(&mut self, ui: &mut egui::Ui, process: &UiProcess) {

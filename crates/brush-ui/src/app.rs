@@ -316,6 +316,12 @@ impl eframe::App for App {
 
         let process = self.tree_ctx.process.clone();
 
+        for (_, tile) in self.tree.tiles.iter_mut() {
+            if let egui_tiles::Tile::Pane(pane) = tile {
+                pane.get_mut().as_pane_mut().on_update(&process);
+            }
+        }
+
         #[cfg(feature = "training")]
         if process.take_reset_layout_request() {
             fn find_pane(tiles: &Tiles<RefCell<Pane>>, f: fn(&Pane) -> bool) -> TileId {

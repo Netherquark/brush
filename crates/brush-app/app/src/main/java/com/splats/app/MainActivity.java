@@ -56,6 +56,8 @@ public class MainActivity extends GameActivity {
     @SuppressLint("StaticFieldLeak")
     public static MainActivity instance;
 
+    private static native void notifyPlatformEvent(String event, String data);
+
     // ── Request codes ─────────────────────────────────────────────────────────
     private static final int REQUEST_CODE_CHOOSE_MP4         = 1000;
     private static final int REQUEST_CODE_EXTRACT_FRAMES     = 1001;
@@ -212,6 +214,7 @@ public class MainActivity extends GameActivity {
                         if (selectedCsvFile != null) {
                             Toast.makeText(this, "CSV selected: " + selectedCsvFile.getName(),
                                     Toast.LENGTH_SHORT).show();
+                            notifyPlatformEvent("csv_picked", selectedCsvFile.getAbsolutePath());
                         } else {
                             Toast.makeText(this, "Failed to read telemetry CSV",
                                     Toast.LENGTH_SHORT).show();
@@ -233,6 +236,7 @@ public class MainActivity extends GameActivity {
                     if (selectedVideoFile != null) {
                         Toast.makeText(this, "MP4 selected: " + selectedVideoFile.getName(),
                                 Toast.LENGTH_SHORT).show();
+                        notifyPlatformEvent("mp4_picked", selectedVideoFile.getAbsolutePath());
                     } else {
                         Toast.makeText(this, "Failed to read MP4", Toast.LENGTH_SHORT).show();
                     }
@@ -254,6 +258,7 @@ public class MainActivity extends GameActivity {
                         public void onFinished() {
                             Toast.makeText(MainActivity.this, "Frames extracted!",
                                     Toast.LENGTH_SHORT).show();
+                            notifyPlatformEvent("extraction_complete", "");
                         }
 
                         @Override
@@ -341,6 +346,8 @@ public class MainActivity extends GameActivity {
                         String sessionBase = stripExtension(sequence.getLogPath().getName());
                         File plyFile = new File(telemetryDir, sessionBase + "_sparse.ply");
                         File resultFile = new File(telemetryDir, sessionBase + "_ba_result.json");
+
+                        notifyPlatformEvent("telemetry_complete", plyFile.getAbsolutePath());
 
                         backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile));
 

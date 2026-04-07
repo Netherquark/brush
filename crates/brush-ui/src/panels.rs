@@ -13,6 +13,11 @@ pub(crate) trait AppPane {
     /// Draw the pane's UI's content.
     fn ui(&mut self, ui: &mut egui::Ui, process: &UiProcess);
 
+    /// Handle per-frame updates.
+    fn on_update(&mut self, process: &UiProcess) {
+        let _ = process;
+    }
+
     /// Handle an incoming message from the UI.
     fn on_message(&mut self, message: &ProcessMessage, process: &UiProcess) {
         let _ = message;

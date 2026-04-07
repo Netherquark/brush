@@ -16,6 +16,20 @@ enum ControlMessage {
     Paused(bool),
 }
 
+#[derive(Debug, Clone)]
+pub enum PlatformEvent {
+    FileSelected {
+        event_type: String,
+        path: String,
+        name: String,
+    },
+    ProcessComplete {
+        event_type: String,
+        success: bool,
+        data: String,
+    },
+}
+
 struct ProcessHandle {
     messages: mpsc::UnboundedReceiver<anyhow::Result<ProcessMessage>>,
     control: mpsc::UnboundedSender<ControlMessage>,
@@ -316,6 +330,19 @@ impl UiProcess {
             callback();
         }
     }
+
+    pub fn dispatch_platform_event(&self, event: PlatformEvent) {
+        let _ = self.read().platform_events.0.send(event);
+    }
+
+    pub fn take_platform_events(&self) -> Vec<PlatformEvent> {
+        let mut events = vec![];
+        let mut inner = self.write();
+        while let Ok(event) = inner.platform_events.1.try_recv() {
+            events.push(event);
+        }
+        events
+    }
 }
 
 struct UiProcessInner {
@@ -325,6 +352,7 @@ struct UiProcessInner {
     splat_scale: Option<f32>,
     controls: CameraController,
     process_handle: Option<ProcessHandle>,
+    platform_events: (mpsc::UnboundedSender<PlatformEvent>, mpsc::UnboundedReceiver<PlatformEvent>),
     ui_mode: UiMode,
     background_style: BackgroundStyle,
     train_paused: bool,
@@ -352,6 +380,7 @@ impl UiProcessInner {
             is_training: false,
             train_iter: 0,
             process_handle: None,
+            platform_events: mpsc::unbounded_channel(),
             ui_mode: UiMode::Default,
             background_style: BackgroundStyle::Black,
             train_paused: false,
