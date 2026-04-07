@@ -44,6 +44,55 @@ android {
 
 ext.requiredNdkVersion = "29.0.14206865"
 
+def workspaceDir = rootProject.projectDir.parentFile.parentFile
+
+def loadDotEnv() {
+    def envFile = new File(rootProject.projectDir.parentFile.parentFile, ".env")
+    def values = [:]
+    if (!envFile.exists()) {
+        return values
+    }
+
+    envFile.eachLine { rawLine ->
+        def line = rawLine.trim()
+        if (!line || line.startsWith("#")) {
+            return
+        }
+
+        if (line.startsWith("export ")) {
+            line = line.substring("export ".length()).trim()
+        }
+
+        def separator = line.indexOf("=")
+        if (separator <= 0) {
+            return
+        }
+
+        def key = line.substring(0, separator).trim()
+        def value = line.substring(separator + 1).trim()
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.substring(1, value.length() - 1)
+        }
+        values[key] = value
+    }
+
+    return values
+}
+
+ext.dotEnv = loadDotEnv()
+ext.androidAbi = (project.findProperty("ANDROID_ABI")
+    ?: ext.dotEnv.get("ANDROID_ABI")
+    ?: "arm64-v8a").toString()
+ext.androidRustTarget = (project.findProperty("ANDROID_RUST_TARGET")
+    ?: ext.dotEnv.get("ANDROID_RUST_TARGET")
+    ?: "aarch64-linux-android").toString()
+ext.androidMinSdk = (project.findProperty("ANDROID_MIN_SDK")
+    ?: ext.dotEnv.get("ANDROID_MIN_SDK")
+    ?: "33").toString()
+ext.requiredNdkVersion = (project.findProperty("ANDROID_NDK_VERSION")
+    ?: ext.dotEnv.get("ANDROID_NDK_VERSION")
+    ?: ext.requiredNdkVersion).toString()
+
 dependencies {
 
     implementation 'androidx.appcompat:appcompat:1.7.0'
@@ -118,6 +167,14 @@ def findSdkDir() {
         }
     }
 
+    def dotEnvSdk = project.ext.dotEnv.get("ANDROID_SDK_ROOT") ?: project.ext.dotEnv.get("ANDROID_HOME")
+    if (dotEnvSdk != null) {
+        def sdkDir = new File(dotEnvSdk.toString())
+        if (sdkDir.isDirectory()) {
+            return sdkDir
+        }
+    }
+
     def envSdk = System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME")
     if (envSdk != null) {
         def sdkDir = new File(envSdk)
@@ -133,7 +190,11 @@ def findSdkDir() {
 
 def findNdkDir() {
     def props = localProperties()
-    def explicitNdk = findProperty("ndk.dir") ?: props.getProperty("ndk.dir") ?: System.getenv("ANDROID_NDK_HOME")
+    def explicitNdk =
+        findProperty("ndk.dir")
+        ?: props.getProperty("ndk.dir")
+        ?: project.ext.dotEnv.get("ANDROID_NDK_HOME")
+        ?: System.getenv("ANDROID_NDK_HOME")
     if (explicitNdk != null) {
         def ndkDir = new File(explicitNdk.toString())
         if (ndkDir.isDirectory()) {
@@ -169,7 +230,10 @@ def findNdkDirOrNull() {
 }
 
 def findCargo() {
-    def configuredPath = findProperty("CARGO_PATH") ?: localProperties().getProperty("CARGO_PATH")
+    def configuredPath =
+        findProperty("CARGO_PATH")
+        ?: localProperties().getProperty("CARGO_PATH")
+        ?: project.ext.dotEnv.get("CARGO_PATH")
     if (configuredPath != null) {
         def configuredCargo = new File(configuredPath.toString())
         if (configuredCargo.canExecute()) {
@@ -194,20 +258,22 @@ def findCargo() {
     )
 }
 
-def workspaceDir = rootProject.projectDir.parentFile.parentFile
-
 tasks.register("buildRustNativeBa") {
     group = "build"
-    description = "Cross-compile brush-process for arm64-v8a"
-    def rustOutput = new File(projectDir, "src/main/jniLibs/arm64-v8a/libbrush_process.so")
+    description = "Cross-compile brush-process for ${project.ext.androidAbi}"
+    def rustOutput = new File(projectDir, "src/main/jniLibs/${project.ext.androidAbi}/libbrush_process.so")
 
     inputs.files(fileTree(workspaceDir) {
         include "Cargo.toml"
         include "Cargo.lock"
         include "crates/brush-process/**"
         include "crates/brush-sfm/**"
+        include ".env"
     })
     inputs.property("requiredNdkVersion", project.ext.requiredNdkVersion)
+    inputs.property("androidAbi", project.ext.androidAbi)
+    inputs.property("androidRustTarget", project.ext.androidRustTarget)
+    inputs.property("androidMinSdk", project.ext.androidMinSdk)
     outputs.file(rustOutput)
 
     doLast {
@@ -224,9 +290,26 @@ tasks.register("buildRustNativeBa") {
             )
         }
         def hostTag = ndkHostTag(ndkDir)
+        def cargoTargetEnvKey = "CARGO_TARGET_${project.ext.androidRustTarget.replace('-', '_').toUpperCase(Locale.ROOT)}"
+        def normalizedTarget = project.ext.androidRustTarget.replace('-', '_')
+        def ccTargetKey = "CC_${normalizedTarget}"
+        def cxxTargetKey = "CXX_${normalizedTarget}"
+        def arTargetKey = "AR_${normalizedTarget}"
+        def ccDashTargetKey = "CC_${project.ext.androidRustTarget}"
+        def cxxDashTargetKey = "CXX_${project.ext.androidRustTarget}"
+        def arDashTargetKey = "AR_${project.ext.androidRustTarget}"
 
-        def clangBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/aarch64-linux-android33-clang")
+        def clangBin = new File(
+            ndkDir,
+            "toolchains/llvm/prebuilt/${hostTag}/bin/${project.ext.androidRustTarget}${project.ext.androidMinSdk}-clang"
+        )
         def arBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/llvm-ar")
+        def libclangDir = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/lib")
+        def explicitLibclang = project.ext.dotEnv.get("LIBCLANG_PATH")
+        def explicitClangPath = project.ext.dotEnv.get("CLANG_PATH")
+        def explicitLdLibraryPath = project.ext.dotEnv.get("LD_LIBRARY_PATH")
+        def opencvLinkPaths = project.ext.dotEnv.get("OPENCV_LINK_PATHS")
+        def opencvLinkLibs = project.ext.dotEnv.get("OPENCV_LINK_LIBS")
 
         if (!clangBin.isFile()) {
             throw new GradleException("NDK clang not found at ${clangBin}")
@@ -237,19 +320,29 @@ tasks.register("buildRustNativeBa") {
 
         exec {
             environment "ANDROID_NDK_HOME", ndkDir.absolutePath
-            environment "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", clangBin.absolutePath
-            environment "CC_aarch64_linux_android", clangBin.absolutePath
-            environment "CC_aarch64-linux-android", clangBin.absolutePath
-            environment "CXX_aarch64_linux_android", clangBin.absolutePath
-            environment "CXX_aarch64-linux-android", clangBin.absolutePath
-            environment "AR_aarch64_linux_android", arBin.absolutePath
-            environment "AR_aarch64-linux-android", arBin.absolutePath
-            environment "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR", arBin.absolutePath
+            environment "ANDROID_ABI", project.ext.androidAbi
+            environment "${cargoTargetEnvKey}_LINKER", clangBin.absolutePath
+            environment ccTargetKey, clangBin.absolutePath
+            environment ccDashTargetKey, clangBin.absolutePath
+            environment cxxTargetKey, clangBin.absolutePath
+            environment cxxDashTargetKey, clangBin.absolutePath
+            environment arTargetKey, arBin.absolutePath
+            environment arDashTargetKey, arBin.absolutePath
+            environment "${cargoTargetEnvKey}_AR", arBin.absolutePath
+            environment "LIBCLANG_PATH", explicitLibclang ?: libclangDir.absolutePath
+            environment "CLANG_PATH", explicitClangPath ?: clangBin.absolutePath
+            environment "LD_LIBRARY_PATH", explicitLdLibraryPath ?: libclangDir.absolutePath
+            if (opencvLinkPaths != null && !opencvLinkPaths.isBlank()) {
+                environment "OPENCV_LINK_PATHS", opencvLinkPaths
+            }
+            if (opencvLinkLibs != null && !opencvLinkLibs.isBlank()) {
+                environment "OPENCV_LINK_LIBS", opencvLinkLibs
+            }
             environment "PATH", "${new File(cargoPath).parent}${File.pathSeparator}${System.getenv("PATH") ?: ""}"
             commandLine(
                 cargoPath, "build",
                 "--release",
-                "--target", "aarch64-linux-android",
+                "--target", project.ext.androidRustTarget,
                 "--package", "brush-process",
                 "--features", "jni-support"
             )
@@ -257,7 +350,7 @@ tasks.register("buildRustNativeBa") {
         }
 
         copy {
-            from(new File(workspaceDir, "target/aarch64-linux-android/release/libbrush_process.so"))
+            from(new File(workspaceDir, "target/${project.ext.androidRustTarget}/release/libbrush_process.so"))
             into(rustOutput.parentFile)
         }
     }

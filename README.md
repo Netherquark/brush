@@ -58,9 +58,15 @@ WebGPU is still an upcoming standard, and as such, only Chrome 134+ on Windows a
 ### Android
 
 As a one time setup, make sure you have the Android SDK & NDK installed.
-- Check if ANDROID_NDK_HOME and ANDROID_HOME are set
+- Copy `.env.example` to `.env` and fill in the Android/OpenCV paths you want Android Studio to use
+- Or set `sdk.dir` / `ndk.dir` in `local.properties`
 - Add the Android target to rust `rustup target add aarch64-linux-android`
 - Install cargo-ndk to manage building a lib `cargo install cargo-ndk`
+
+Android Studio now checks configuration in this order where applicable:
+- Gradle project properties / `local.properties`
+- workspace `.env`
+- regular process environment variables
 
 Each time you change the rust code, run
 - `cargo ndk -t arm64-v8a -o crates/brush-app/app/src/main/jniLibs/ build`
