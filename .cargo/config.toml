@@ -2,8 +2,26 @@
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 runner = 'wasm-bindgen-test-runner'
 
+[env]
+# OpenCV Environment Variables for Android Cross-Compilation
+OPENCV_LINK_PATHS = "/home/netherquark/Soham/Large_code/sources/forks/brush/crates/brush-app/android/app/src/main/jniLibs/arm64-v8a"
+OPENCV_LINK_LIBS = "opencv_core,opencv_imgproc,opencv_imgcodecs,opencv_features2d,opencv_flann,opencv_calib3d"
+OPENCV_INCLUDE_PATHS = "/home/netherquark/Soham/Large_code/sources/forks/brush/third_party/opencv/include"
+
+# [build]
+# Use sccache to avoid re-compiling static dependencies like OpenCV
+# Install it first: cargo install sccache
+# Then uncomment the next line:
+# rustc-wrapper = "sccache"
+
 [target.aarch64-linux-android]
 rustflags = [
     "-C", "target-feature=+neon",
     "-C", "opt-level=3",
+    "-C", "link-arg=-Wl,--threads=12",
+    "-C", "link-arg=-Wl,--allow-shlib-undefined",
+    "-C", "link-arg=-lc++_shared",
 ]
+
+
+
