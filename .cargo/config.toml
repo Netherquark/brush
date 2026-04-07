@@ -2,20 +2,6 @@
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 runner = 'wasm-bindgen-test-runner'
 
-[env]
-# OpenCV Environment Variables for Android Cross-Compilation
-OPENCV_LINK_PATHS = "/home/netherquark/Soham/Large_code/sources/forks/brush/crates/brush-app/android/app/src/main/jniLibs/arm64-v8a"
-OPENCV_LINK_LIBS = "opencv_core,opencv_imgproc,opencv_imgcodecs,opencv_features2d,opencv_flann,opencv_calib3d"
-OPENCV_INCLUDE_PATHS = "/home/netherquark/Soham/Large_code/sources/forks/brush/third_party/opencv/include"
-
-# Bindgen Environment Variables for host-side build (NDK-Internal LLVM - Flatpak Safe)
-LIBCLANG_PATH = "/home/netherquark/Soham/Large_code/Android/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/lib"
-CLANG_PATH = "/home/netherquark/Soham/Large_code/Android/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
-# Force NDK-internal lib path so Gradle/Flatpak can see the library
-LD_LIBRARY_PATH = { value = "/home/netherquark/Soham/Large_code/Android/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/lib", force = true }
-
-
-
 # [build]
 # Use sccache to avoid re-compiling static dependencies like OpenCV
 # Install it first: cargo install sccache
@@ -26,7 +12,6 @@ LD_LIBRARY_PATH = { value = "/home/netherquark/Soham/Large_code/Android/ndk/29.0
 rustflags = [
     "-C", "target-feature=+neon",
     "-C", "opt-level=3",
-    "-C", "link-arg=-Wl,--threads=12",
     "-C", "link-arg=-Wl,--allow-shlib-undefined",
     "-C", "link-arg=-lc++_shared",
 ]

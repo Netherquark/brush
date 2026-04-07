@@ -13,7 +13,6 @@ fn main() {
         let opencv_lib_dir = workspace_root
             .join("crates")
             .join("brush-app")
-            .join("android")
             .join("app")
             .join("src")
             .join("main")
