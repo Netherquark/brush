@@ -1,38 +1,34 @@
-// ============================================================
-// FILE PATH: crates/brush-process/build.rs
-//
-// PROJECT: brush-app — Drone-Driven On-Device Gaussian Splatting
-//
-// PURPOSE:
-//   Tells the Rust linker where to find the prebuilt minimal OpenCV .so.
-//   This script is invoked BEFORE cargo compiles the crate.
-//   The environment variables it reads are set by the Gradle task
-//   `buildRustNativeBa` in crates/brush-app/app/build.gradle.
-//
-// NOTE:
-//   Stage 3.7 (BA module) does NOT link against OpenCV at all.
-//   This build.rs only matters for Stages 3.1–3.6.
-//   If you are only building/testing Stage 3.7, you can set a dummy
-//   OPENCV_LINK_LIBS_DIR or comment out the opencv dep in Cargo.toml.
-//
-// PLACE THIS FILE AT:
-//   <workspace_root>/crates/brush-process/build.rs
-// ============================================================
+use std::env;
+use std::path::PathBuf;
 
 fn main() {
-    // Read env vars set by Gradle before invoking cargo.
-    // These are NOT set when running `cargo test` on desktop —
-    // in that case, we skip OpenCV linkage (BA tests don't need it).
-    if let Ok(opencv_lib_dir) = std::env::var("OPENCV_LINK_LIBS_DIR") {
-        println!("cargo:rustc-link-search=native={opencv_lib_dir}");
-        // Link against the minimal OpenCV AAR .so (core + imgproc + features2d + calib3d only)
-        println!("cargo:rustc-link-lib=dylib=opencv_java4");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    
+    // We only need custom linking logic for Android because opencv pkg-config doesn't work well there
+    if target_os == "android" {
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        let manifest_path = PathBuf::from(manifest_dir);
+        let workspace_root = manifest_path.parent().unwrap().parent().unwrap();
+        
+        let opencv_lib_dir = workspace_root
+            .join("crates")
+            .join("brush-app")
+            .join("android")
+            .join("app")
+            .join("src")
+            .join("main")
+            .join("jniLibs")
+            .join("arm64-v8a");
+            
+        // Tell cargo to tell rustc to link the custom directory where the opencv libs are
+        println!("cargo:rustc-link-search=native={}", opencv_lib_dir.display());
+        
+        // Ensure cargo links to the right libraries
+        println!("cargo:rustc-link-lib=dylib=opencv_core");
+        println!("cargo:rustc-link-lib=dylib=opencv_imgproc");
+        println!("cargo:rustc-link-lib=dylib=opencv_imgcodecs");
+        println!("cargo:rustc-link-lib=dylib=opencv_features2d");
+        println!("cargo:rustc-link-lib=dylib=opencv_flann");
+        println!("cargo:rustc-link-lib=dylib=opencv_calib3d");
     }
-
-    // Re-run this script if these env vars change (cache invalidation)
-    println!("cargo:rerun-if-env-changed=OPENCV_LINK_LIBS_DIR");
-    println!("cargo:rerun-if-env-changed=OPENCV_INCLUDE_PATHS");
-
-    // nalgebra and serde are pure Rust — no special linkage directives needed.
-    // jni symbols are resolved at runtime by the Android dynamic linker.
 }

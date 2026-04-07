@@ -45,21 +45,31 @@ The repository is a hybrid workspace bridging an Android application and a highl
 
 ---
 
-## 3. Known Implementation Gaps & Stubs
-During analysis, major gaps in the pipeline were identified regarding the integration of machine-learning native SfM implementations.
+## 3. Implementation Status & OpenCV Integration
 
-**The "Missing" Rust SfM Pipeline:**
-In `crates/brush-process/src/sfm/mod.rs`, the core C++/Rust pipeline is intentionally gated as `Placeholder stubs`. 
-The following stages **do not exist** in the Rust codebase and are completely unimplemented:
-- **Stage 3.1:** Feature Extraction 
-- **Stage 3.2:** Matching 
-- **Stage 3.3:** RANSAC 
-- **Stage 3.4:** Pose Recovery
-- **Stage 3.5:** Triangulation 
-- **Stage 3.6:** Inlier Filtering
-- **Stage 3.8:** Pose Export (handled loosely by Java equivalents presently).
+During analysis, major gaps in the pipeline were identified regarding the integration of native SfM implementations. We are actively replacing the old Java-based fallback SfM with a high-performance native pipeline using OpenCV 4.13.0. 
 
-Because these modules are missing, the repository leans entirely on the rudimentary Java `TelemetrySparseReconstruction` layer to fill the gap.
+**OpenCV Asset Integration (Completed):**
+- **Dynamic Libraries**: Prebuilt OpenCV 4.13.0 and TBB `.so` files are located in `crates/brush-app/app/src/main/jniLibs/arm64-v8a/`. 
+- **JNI Loading**: Due to Android's dynamic linker constraints, these libraries must be explicitly loaded in `MainActivity.java` via `System.loadLibrary` (order: `tbb` -> `opencv_core` -> `opencv_imgproc` -> ... -> `brush_app`).
+- **Headers**: C++ headers are in `third_party/opencv/include/`.
+
+**Build System & Sandbox Workarounds (Optimized):**
+To address the 30-minute compilation bottleneck and Flatpak sandbox restrictions:
+- **Parallel Optimization**: Switched to `lto = "thin"` and `codegen-units = 16` in the release profile.
+- **Saturated Linking**: Configured `-Wl,--threads=12` in `.cargo/config.toml`.
+- **Flatpak/Gradle Bypass**: The `:app:buildRustNativeBa` task in `build.gradle` is configured to **skip** the Cargo build if the native library already exists. This avoids `libclang.so` linkage errors caused by Flatpak's restricted access to host `/usr/lib64`.
+- **NDK Check**: The build uses the **NDK-internal LLVM toolchain** (`LIBCLANG_PATH` and `CLANG_PATH`) for bindgen to maintain environment consistency.
+
+**The Rust SfM Pipeline (In Progress):**
+In `crates/brush-process/src/sfm/mod.rs`, the core pipeline is being implemented:
+- **Stage 3.1: Feature Extraction (Completed)**: Using native OpenCV ORB with grayscale conversion and `features2d` module.
+- **Stage 3.2: Matching (Planned)**: Using `BFMatcher` and GPS-based neighborhood queries.
+- **Stage 3.3: RANSAC**: Planned.
+- **Stage 3.4: Pose Recovery**: Planned.
+- **Stage 3.5: Triangulation**: Planned.
+- **Stage 3.6: Inlier Filtering**: Planned.
+
 
 **UI Redundancies & Dead Code:**
 The application has UI buttons explicitly referencing the missing steps (e.g., `Extract`, `Pose Est.`, `Bundle`, `Save PLY`, `Viewer`). In `MainActivity.java`, these actions map solely to literal String stubs returning a `Toast.makeText(..., "coming soon")`. The execution of the active backend happens exclusively via the singular `Telemetry` execution flow.
@@ -69,9 +79,29 @@ Errors inside the Java telemetry loops fail to propagate standard return signals
 
 ---
 
-## 4. Overall Codebase Context Map
-- **UI Management**: `brush-ui`
-- **Rendering / WGPU**: `brush-render`, `brush-wgsl`
-- **Native Bridges**: `brush-app/android.rs`, `BundleAdjustmentLib.kt`
-- **Data File Parsing**: `colmap-reader`, `brush-vfs`, `rrfd` (File dialogs).
-- **Core Pipeline Computation**: `brush-process`, `brush-sfm`.
+---
+
+## 5. Development Environment & Toolchain
+
+This project uses a highly specific cross-compilation environment to bridge the Fedora host with the Android Pixel 9a target.
+
+- **Host OS**: Fedora Linux 43 (x86_64)
+- **Android NDK**: 29.0.14206865 (Verified)
+- **Target Architecture**: `arm64-v8a` (`aarch64-linux-android`)
+- **OpenCV SDK**: Native Android SDK 4.13.0 (Modularized `.so` and headers)
+- **IDE**: Android Studio (Flatpak version)
+  - **Flatpak Workaround**: Uses NDK-internal LLVM and Gradle "Skip if exists" logic to bypass sandbox restrictions.
+- **Optimized Workflow**:
+  1. **Host CLI**: `cargo ndk -t arm64-v8a -o crates/brush-app/app/src/main/jniLibs/ build --release` (Fastest, full system access).
+  2. **IDE**: Hit **Run** in Android Studio (Gradle skips native build and packages pre-compiled `.so`).
+- **Rust Build Profile (Release)**:
+  - `opt-level = 3`
+  - `lto = "thin"`
+  - `codegen-units = 16`
+  - `panic = "abort"`
+  - `incremental = true`
+- **Compiler Flags**:
+  - `target-feature=+neon`: Enabled for ARM SIMD performance.
+  - `-Wl,--threads=12`: Parallel linking enabled for AMD Ryzen 5650U.
+  - `--allow-shlib-undefined`: Required for OpenCV system symbol resolution.
+

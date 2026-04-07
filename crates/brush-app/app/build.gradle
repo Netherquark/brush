@@ -211,21 +211,20 @@ tasks.register("buildRustNativeBa") {
     outputs.file(rustOutput)
 
     doLast {
+        if (project.hasProperty("skipRustBuild") || rustOutput.exists()) {
+            logger.lifecycle("Native library libbrush_process.so found at ${rustOutput.absolutePath}; skipping Rust build.")
+            return
+        }
         def cargoPath = findCargo()
         def ndkDir = findNdkDirOrNull()
         if (ndkDir == null) {
-            if (rustOutput.isFile()) {
-                logger.lifecycle(
-                    "NDK ${project.ext.requiredNdkVersion} not found; reusing existing ${rustOutput.absolutePath}."
-                )
-                return
-            }
             throw new GradleException(
                 "NDK ${project.ext.requiredNdkVersion} is required to build ${rustOutput.name}, " +
                 "and no existing prebuilt library was found at ${rustOutput.absolutePath}."
             )
         }
         def hostTag = ndkHostTag(ndkDir)
+
         def clangBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/aarch64-linux-android33-clang")
         def arBin = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/llvm-ar")
 

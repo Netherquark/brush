@@ -50,6 +50,13 @@ import com.splats.app.telemetry.KeyframeSelectionConfig;
 public class MainActivity extends GameActivity {
 
     static {
+        System.loadLibrary("tbb");
+        System.loadLibrary("opencv_core");
+        System.loadLibrary("opencv_imgproc");
+        System.loadLibrary("opencv_imgcodecs");
+        System.loadLibrary("opencv_features2d");
+        System.loadLibrary("opencv_flann");
+        System.loadLibrary("opencv_calib3d");
         System.loadLibrary("brush_app");
     }
 
