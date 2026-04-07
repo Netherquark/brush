@@ -36,7 +36,7 @@ pub mod stage_3_7_bundle_adjustment {
 // ── Placeholder stubs for OpenCV stages (fill in as you implement them) ───────
 // Uncomment each line when the corresponding file exists:
 //
-// pub mod stage_3_1_feature_extraction;
+pub mod stage_3_1_feature_extraction;
 // pub mod stage_3_2_matching;
 // pub mod stage_3_3_ransac;
 // pub mod stage_3_4_pose_recovery;
