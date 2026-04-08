@@ -99,42 +99,15 @@ public class MainActivity extends GameActivity {
         });
     }
 
-    /** Button 5 – run full telemetry preprocess (CSV + video must already be chosen) */
-    public static void runTelemetry() {
+    /** Unified Train button – runs full SfM pipeline (3.1 - 3.8) */
+    public static void runTrain() {
         if (instance == null) return;
         instance.runOnUiThread(() -> {
-            Log.i(TAG, "runTelemetry from Rust");
+            Log.i(TAG, "runTrain from Rust");
             instance.startTelemetryPreprocessIfReady();
         });
     }
 
-    /** Button 6 – pose estimation stub */
-    public static void runPoseEstimation() {
-        if (instance == null) return;
-        instance.runOnUiThread(() ->
-            Toast.makeText(instance, "Pose estimation: coming soon", Toast.LENGTH_SHORT).show());
-    }
-
-    /** Button 7 – bundle alignment stub */
-    public static void runBundleAlignment() {
-        if (instance == null) return;
-        instance.runOnUiThread(() ->
-            Toast.makeText(instance, "Bundle alignment: coming soon", Toast.LENGTH_SHORT).show());
-    }
-
-    /** Button 8 – open latest result in viewer stub */
-    public static void openInViewer() {
-        if (instance == null) return;
-        instance.runOnUiThread(() ->
-            Toast.makeText(instance, "Open in viewer: coming soon", Toast.LENGTH_SHORT).show());
-    }
-
-    /** Button 9 – save .ply to disk stub */
-    public static void savePly() {
-        if (instance == null) return;
-        instance.runOnUiThread(() ->
-            Toast.makeText(instance, "Save PLY: coming soon", Toast.LENGTH_SHORT).show());
-    }
 
 
     // ── Instance fields ───────────────────────────────────────────────────────

@@ -12,52 +12,39 @@ object OpenCvFrontendLib {
     }
 
     @JvmStatic
-    private external fun runOpenCvFrontend(
+    private external fun runFullTrainSync(
         framesJson: String,
         intrinsicsJson: String,
         configJson: String,
         gpsJson: String,
         imuJson: String,
+        outputDir: String,
     ): String
 
     @JvmStatic
     @WorkerThread
-    fun runOpenCvFrontendSync(
+    fun runFullPipelineSync(
         framesJson: String,
         intrinsicsJson: String,
+        outputDir: String,
         configJson: String = "{}",
         gpsJson: String = "[]",
         imuJson: String = "[]",
     ): String {
         checkWorkerThread()
-        return runOpenCvFrontend(
+        return runFullTrainSync(
             framesJson = framesJson,
             intrinsicsJson = intrinsicsJson,
             configJson = configJson,
             gpsJson = gpsJson,
             imuJson = imuJson,
-        )
-    }
-
-    suspend fun runOpenCvFrontendAsync(
-        framesJson: String,
-        intrinsicsJson: String,
-        configJson: String = "{}",
-        gpsJson: String = "[]",
-        imuJson: String = "[]",
-    ): String = withContext(Dispatchers.Default) {
-        runOpenCvFrontend(
-            framesJson = framesJson,
-            intrinsicsJson = intrinsicsJson,
-            configJson = configJson,
-            gpsJson = gpsJson,
-            imuJson = imuJson,
+            outputDir = outputDir,
         )
     }
 
     private fun checkWorkerThread() {
         check(Looper.myLooper() != Looper.getMainLooper()) {
-            "OpenCV frontend must not run on the main thread"
+            "SfM pipeline must not run on the main thread"
         }
     }
 }
