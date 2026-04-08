@@ -5,9 +5,9 @@ This knowledge base synthesizes the architecture, data flow, component breakdown
 ## 1. High-Level Architecture Overview
 The repository is a hybrid workspace bridging an Android application and a highly optimized native Rust computational core. 
 - **Frontend / Rendering**: Rust + WGPU using `egui` for the cross-platform UI (`brush-ui`).
-- **Telemetry Preprocessor**: Native Android Java (`TelemetrySparseReconstruction.java`) which serves as a pre-processor for video and sensor telemetry mapping.
+- **Telemetry Bridge**: Native Android Java (`TelemetrySparseReconstruction.java`) which prepares video and sensor telemetry mapping for the native pipeline.
 - **Inter-Process Communication (IPC)**: A structured JNI bridge routing asynchronous string/JSON messages and callback hooks between Rust's tokio runtime and Android's JVM.
-- **Computational Math Engine**: Pure Rust optimization logic mapping sparse features into a globally consistent state (`brush-sfm`).
+- **Unified Computational Engine**: A single, end-to-end Rust pipeline (`brush-process`) that orchestrates feature extraction, pose recovery, triangulation, and bundle adjustment using OpenCV, graduating to Gaussian Splatting training.
 
 ---
 
@@ -15,94 +15,68 @@ The repository is a hybrid workspace bridging an Android application and a highl
 
 ### A. The Core UI Layer (`crates/brush-ui`)
 - **Location:** `crates/brush-ui/src/scene.rs`
-- **Purpose:** Acts as the primary interaction canvas for the user. It is built natively in Rust using `egui`.
+- **Purpose:** Acts as the primary interaction canvas. It uses a consolidated **"One Train Process"** model.
 - **Mechanics:** 
-  - Instead of invoking OS-specific code directly, it emits abstract platform actions via an internal UiProcess state (e.g., `process.call_platform_action("telemetry")`).
-  - Features asynchronous polling inside its `on_update` loop to retrieve status events (like `"telemetry_complete"`) via `tokio::mpsc` queues without stalling the render thread.
+  - Instead of individual stage buttons, the UI focuses on a global **"Train"** action (`process.call_platform_action("run_train")`).
+  - Implements a unified status listener that polls `tokio::mpsc` queues to provide real-time updates from the native training stages.
 
 ### B. The JNI Translation API (`crates/brush-app/src/android.rs`)
 - **Purpose:** The glue binding the Rust frontend with the Android operating system.
-- **Rust -> Java:** Contains static maps binding UI event strings (`"choose_csv"`, `"telemetry"`) to `call_java_static` functions. It uses `rrfd::android::get_jvm()` to access the `MainActivity` JVM class and trigger methods.
-- **Java -> Rust:** Exposes the `Java_com_splats_app_MainActivity_notifyPlatformEvent` function, allowing Android tasks to signal the tokenized strings back to the Rust Toki runtime (e.g. providing a path to a generated PLY mesh).
+- **Key Methods:**
+  - `run_train`: Consolidated platform action that triggers the full Android telemetry and native SfM flow.
+  - `Java_com_splats_app_MainActivity_notifyPlatformEvent`: Shared entry point for Android to signal completion or updates back to Rust.
 
 ### C. The Android Telemetry Layer (`com.splats.app`)
 - **Location:** `crates/brush-app/app/src/main/java/com/splats/app/`
-- **MainActivity.java**: Manages intent requests for file-picking (MP4/CSV) and triggers the heavy `TelemetryPreprocessor` on single-thread executors.
+- **MainActivity.java**: Orchestrates library loading and handles the high-level response from the native pipeline.
 - **TelemetrySparseReconstruction.java**: 
-  - **The "Fallback SfM":** Currently performs manual feature-patch extraction, image border matching, and initial epipolar triangulation natively in Java. It heavily relies on the Drone's spatial priors (GPS/IMU coordinates) ingested via parsed CSVs.
-  - **Payload Generation:** Accumulates massive structural arrays mapping `observations`, `poses`, and `points` and serializes them into large JSON strings.
-- **BundleAdjustmentLib.kt**: The Kotlin wrapper abstracting native JNI optimization methods. It hands the compiled JSON payload down to `brush_process`.
+  - **The JNI Bridge:** No longer contains SfM logic. It is strictly responsible for preparing input payloads (JSON-serialized frames, GPS priors, and IMU deltas).
+  - **Payload Generation:** Maps spatial priors into `gps.json` and `imu.json` formats required by the Rust core.
+- **OpenCvFrontendLib.kt**: The modern Kotlin entry point for the **Unified SfM Pipeline**. It exposes `runFullPipelineSync`, which encapsulates the entire native lifecycle from extraction to export.
 
-### D. The Numerical Optimization Engine (`crates/brush-sfm` & `crates/brush-process`)
-- **Location:** `crates/brush-sfm/src/sfm/stage_3_7_bundle_adjustment.rs`
-- **Purpose:** Pure mathematical optimization for 3D trajectory alignment, eliminating the need for heavyweight C++ OpenCV binaries in the final packaging.
-- **Execution:**
-  1. Accepts JSON structs across the JNI bridge and standardizes them using `serde_json`.
-  2. Subdivides camera tracks utilizing a "Sliding Window" matrix.
-  3. Uses **Levenberg-Marquardt** via `run_lm_core(..)` to minimize the distance between 2D feature observations and triangulated 3D points.
-  4. Mathematically computes Schur Complements using `nalgebra` structures to extract camera rotations via Axis-Angle log mapping.
-  5. Returns structural refinements as a unified `BaResult` JSON back to the Android JVM stack via the JNI.
+### D. The Native SfM Pipeline (`crates/brush-process`)
+- **Location:** `crates/brush-process/src/sfm/mod.rs`
+- **Purpose:** End-to-end sparse reconstruction using native OpenCV 4.13.0, eliminating fragmented Java-to-Rust JNI chatter.
+- **Execution Workflow (Stages 3.1 - 3.8):**
+  1. **3.1 - 3.2**: Feature Detection (ORB) and KNN Matching.
+  2. **3.3 - 3.4**: Geometric Filtering (RANSAC) and Pose Recovery.
+  3. **3.5 - 3.6**: Triangulation and Reprojection Inlier Filtering.
+  4. **3.7**: Bundle Adjustment (via `brush-sfm`) for global consistency.
+  5. **3.8**: **Pose Export**: Generates Nerfstudio-compatible `transforms.json` and `sparse.ply`.
 
 ---
 
 ## 3. Implementation Status & OpenCV Integration
 
-During analysis, major gaps in the pipeline were identified regarding the integration of native SfM implementations. We are actively replacing the old Java-based fallback SfM with a high-performance native pipeline using OpenCV 4.13.0. 
-
 **OpenCV Asset Integration (Completed):**
-- **Custom Build Environment**: OpenCV 4.13.0 must be built out-of-tree using a specialized `cmake` command invoking the `android-30` platform and targeting `arm64-v8a`. The build intentionally strips Java/JS wrappers, UI projects, ML modules, and examples (`-DBUILD_opencv_java=OFF`, `-DBUILD_ANDROID_PROJECTS=OFF`, etc.) to significantly reduce the `.so` artifact size, ensuring Android Studio can bundle it without bloat.
-- **Dynamic Libraries**: Prebuilt OpenCV 4.13.0 and TBB `.so` files are located in `crates/brush-app/app/src/main/jniLibs/arm64-v8a/`. 
-- **JNI Loading**: Due to Android's dynamic linker constraints, these libraries must be explicitly loaded in `MainActivity.java` via `System.loadLibrary` (order: `tbb` -> `opencv_core` -> `opencv_imgproc` -> ... -> `brush_app`).
-- **Headers**: C++ headers retrieved during the `cmake` phase are placed in `third_party/opencv/include/`.
+- **Dynamic Libraries**: Modular OpenCV 4.13.0 and TBB `.so` files are bundled in `jniLibs/arm64-v8a/`.
+- **Optimization**: The core pipeline uses native OpenCV modules (`features2d`, `calib3d`) compiled specifically for Android `arm64-v8a` with NEON acceleration.
 
-**Build System & Sandbox Workarounds (Optimized):**
-To address the 30-minute compilation bottleneck and Flatpak sandbox restrictions:
-- **Parallel Optimization**: Switched to `lto = "thin"` and `codegen-units = 16` in the release profile.
-- **Saturated Linking**: Configured `-Wl,--threads=12` in `.cargo/config.toml`.
-- **Flatpak/Gradle Bypass**: The `:app:buildRustNativeBa` task in `build.gradle` is configured to **skip** the Cargo build if the native library already exists. This avoids `libclang.so` linkage errors caused by Flatpak's restricted access to host `/usr/lib64`.
-- **NDK Check**: The build uses the **NDK-internal LLVM toolchain** (`LIBCLANG_PATH` and `CLANG_PATH`) for bindgen to maintain environment consistency.
+**The Unified SfM Pipeline (Completed):**
+- **Stages 3.1 - 3.8**: The full pipeline from image extraction to final export is now implemented and verified.
+- **Pose Export**: The system successfully exports a visualizable sparse mesh (`sparse.ply`) and the necessary transformation data for the Gaussian Splatting stage.
 
-**The Rust SfM Pipeline (In Progress):**
-In `crates/brush-process/src/sfm/mod.rs`, the core pipeline is being implemented:
-- **Stage 3.1: Feature Extraction (Completed)**: Using native OpenCV ORB with grayscale conversion and `features2d` module.
-- **Stage 3.2: Matching (Completed)**: Using `knnMatch` with Lowe's ratio test and Hamming distance thresholding.
-- **Stage 3.3: RANSAC (Completed)**: Filtering matches via Epipolar Geometry (`USAC_MAGSAC`).
-- **Stage 3.4: Pose Recovery (Completed)**: Recovering `R` and `t` matrices.
-- **Stage 3.5: Triangulation (Completed)**: Transforming 2D points into triangulated 3D spatial points.
-- **Stage 3.6: Inlier Filtering (Completed)**: Keeping only triangulated points with positive Z coordinates and minimal reprojection error.
-
-
-**UI Redundancies & Dead Code:**
-The application has UI buttons explicitly referencing the missing steps (e.g., `Extract`, `Pose Est.`, `Bundle`, `Save PLY`, `Viewer`). In `MainActivity.java`, these actions map solely to literal String stubs returning a `Toast.makeText(..., "coming soon")`. The execution of the active backend happens exclusively via the singular `Telemetry` execution flow.
-
-**Bugs Noticed:**
-Errors inside the Java telemetry loops fail to propagate standard return signals back to the Native Rust token registry, leaving `tokio` listeners perpetually polling a `"Running..."` state if `TelemetryPreprocessorCallback#onComplete` detects a failure. 
+**UI Consolidation:**
+- The previous grid of "Coming Soon" buttons has been replaced by a single, prominent **Train** button in both the Rust UI and Android Java frontend. 
+- Error handling has been centralized; failures in the native pipeline now propagate back through JNI to the UI as explicit error states instead of hanging the polling loop.
 
 ---
 
----
-
-## 5. Development Environment & Toolchain
-
-This project uses a highly specific cross-compilation environment to bridge the Fedora host with the Android Pixel 9a target.
+## 4. Development Environment & Toolchain
 
 - **Host OS**: Fedora Linux 43 (x86_64)
-- **Android NDK**: 29.0.14206865 (Verified)
 - **Target Architecture**: `arm64-v8a` (`aarch64-linux-android`)
 - **OpenCV SDK**: Native Android SDK 4.13.0 (Modularized `.so` and headers)
-- **IDE**: Android Studio (Flatpak version)
-  - **Flatpak Workaround**: Uses NDK-internal LLVM and Gradle "Skip if exists" logic to bypass sandbox restrictions.
-- **Optimized Workflow**:
-  1. **Host CLI**: `cargo ndk -t arm64-v8a -o crates/brush-app/app/src/main/jniLibs/ build --release` (Fastest, full system access).
-  2. **IDE**: Hit **Run** in Android Studio (Gradle skips native build and packages pre-compiled `.so`).
-- **Rust Build Profile (Release)**:
-  - `opt-level = 3`
-  - `lto = "thin"`
-  - `codegen-units = 16`
-  - `panic = "abort"`
-  - `incremental = true`
-- **Compiler Flags**:
-  - `target-feature=+neon`: Enabled for ARM SIMD performance.
-  - `-Wl,--threads=12`: Parallel linking enabled for AMD Ryzen 5650U.
-  - `--allow-shlib-undefined`: Required for OpenCV system symbol resolution.
+- **NDK/Gradle Bypass Pattern**:
+  1. **Host CLI Build**: `cargo ndk -t arm64-v8a -o crates/brush-app/app/src/main/jniLibs/ build --release`
+  2. **Android Studio**: Gradle `:app:buildRustNativeBa` skips the Cargo build if the library exists, avoiding Flatpak environment conflicts.
 
+- **Rust Build Profile (Release)**:
+  - `opt-level = 3`, `lto = "thin"`, `codegen-units = 16`.
+  - Enables SIMD (`target-feature=+neon`) and parallel linking for performance.
+
+---
+
+## 5. Known Integration Points
+- **SfM to Training**: The output of Stage 3.8 (`transforms.json`) is the direct input for the `brush-train` Gaussian Splatting core.
+- **Telemetry Reliability**: Relies on accurate Enu position mappings from the Drone CSVs to seed the global SfM coordinate system.
