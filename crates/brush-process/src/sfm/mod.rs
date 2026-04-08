@@ -184,6 +184,8 @@ pub mod jni_bridge {
         frames_json: JString<'_>,
         intrinsics_json: JString<'_>,
         config_json: JString<'_>,
+        gps_json: JString<'_>,
+        imu_json: JString<'_>,
     ) -> jstring {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut to_string = |value: JString<'_>| -> String {
@@ -193,8 +195,10 @@ pub mod jni_bridge {
             let frames_str = to_string(frames_json);
             let intrinsics_str = to_string(intrinsics_json);
             let config_str = to_string(config_json);
+            let gps_str = to_string(gps_json);
+            let imu_str = to_string(imu_json);
 
-            let json = match run_frontend_from_json(&frames_str, &intrinsics_str, &config_str) {
+            let json = match run_frontend_from_json(&frames_str, &intrinsics_str, &config_str, &gps_str, &imu_str) {
                 Ok(value) => value,
                 Err(error) => serde_json::json!({ "error": error.to_string() }).to_string(),
             };
@@ -219,11 +223,17 @@ pub mod jni_bridge {
         frames_json: &str,
         intrinsics_json: &str,
         config_json: &str,
+        gps_json: &str,
+        imu_json: &str,
     ) -> anyhow::Result<String> {
         let frames: Vec<FrontendFrameInput> =
             serde_json::from_str(frames_json).context("failed to parse frames json")?;
         let intrinsics: CameraIntrinsics =
             serde_json::from_str(intrinsics_json).context("failed to parse intrinsics json")?;
+        let gps_priors: Vec<GpsPrior> =
+            serde_json::from_str(gps_json).unwrap_or_default();
+        let imu_priors: Vec<ImuRotationPrior> =
+            serde_json::from_str(imu_json).unwrap_or_default();
         let parsed_config: FrontendJniConfig = if config_json.trim().is_empty() {
             FrontendJniConfig::default()
         } else {
@@ -246,66 +256,80 @@ pub mod jni_bridge {
             },
         };
 
-        let mut features = Vec::with_capacity(frames.len());
-        for frame in &frames {
-            let image_bytes = fs::read(&frame.image_path)
-                .with_context(|| format!("failed to read frame {}", frame.image_path))?;
-            let extraction = extract_features(&image_bytes).map_err(|error| {
-                anyhow::anyhow!(
-                    "feature extraction failed for {}: {error}",
-                    frame.image_path
-                )
-            })?;
-            features.push(FrameFeatures::from_extraction(frame.frame_idx, extraction));
-        }
-
-        let mut points = Vec::new();
+        let mut points: Vec<[f64; 3]> = Vec::new();
         let mut observations = Vec::new();
         let mut pair_errors = Vec::new();
         let mut total_matches = 0usize;
         let mut total_inliers = 0usize;
-        let total_pairs = features.len().saturating_sub(1);
+        let total_pairs = frames.len().saturating_sub(1);
         let mut successful_pairs = 0usize;
 
-        for pair_idx in 0..total_pairs {
-            let frame_a = &features[pair_idx];
-            let frame_b = &features[pair_idx + 1];
+        let mut prev_features: Option<FrameFeatures> = None;
+        let mut point_tracker: std::collections::HashMap<(usize, u32, u32), usize> = std::collections::HashMap::new();
 
-            match run_opencv_frontend(
-                frame_a,
-                frame_b,
-                intrinsics.clone(),
-                Vec::new(),
-                Vec::new(),
-                &frontend_config,
-            ) {
-                Ok(frontend) => {
-                    successful_pairs += 1;
-                    total_matches += frontend.matching.matches.len();
-                    total_inliers += frontend.pose.inlier_count.max(0) as usize;
+        for frame in &frames {
+            let image_bytes = fs::read(&frame.image_path)
+                .with_context(|| format!("failed to read frame {}", frame.image_path))?;
+            let extraction = extract_features(&image_bytes).map_err(|error| {
+                anyhow::anyhow!("feature extraction failed for {}: {error}", frame.image_path)
+            })?;
+            let current_features = FrameFeatures::from_extraction(frame.frame_idx, extraction);
 
-                    let point_offset = points.len();
-                    points.extend(
-                        frontend
-                            .stage_3_6
-                            .point_positions
-                            .iter()
-                            .map(|point| [point.x, point.y, point.z]),
-                    );
-                    observations.extend(frontend.stage_3_6.observations.into_iter().map(
-                        |mut obs| {
-                            obs.point_idx += point_offset;
-                            obs
-                        },
-                    ));
-                }
-                Err(error) => {
-                    pair_errors.push(format!(
-                        "pair {}->{} failed: {error}",
-                        frame_a.frame_id, frame_b.frame_id
-                    ));
+            if let Some(ref prev) = prev_features {
+                match run_opencv_frontend(
+                    prev,
+                    &current_features,
+                    intrinsics.clone(),
+                    gps_priors.clone(),
+                    imu_priors.clone(),
+                    &frontend_config,
+                ) {
+                    Ok(frontend) => {
+                        successful_pairs += 1;
+                        total_matches += frontend.matching.matches.len();
+                        total_inliers += frontend.pose.inlier_count.max(0) as usize;
+
+                        for (i, p) in frontend.stage_3_6.point_positions.iter().enumerate() {
+                            let obs_a = &frontend.stage_3_6.observations[i * 2];
+                            let obs_b = &frontend.stage_3_6.observations[i * 2 + 1];
+
+                            let x_bits = (obs_a.observed[0] as f32).to_bits();
+                            let y_bits = (obs_a.observed[1] as f32).to_bits();
+                            let key_prev = (obs_a.frame_idx, x_bits, y_bits);
+
+                            let point_idx = if let Some(&existing_idx) = point_tracker.get(&key_prev) {
+                                points[existing_idx][0] = (points[existing_idx][0] + p.x) / 2.0;
+                                points[existing_idx][1] = (points[existing_idx][1] + p.y) / 2.0;
+                                points[existing_idx][2] = (points[existing_idx][2] + p.z) / 2.0;
+                                existing_idx
+                            } else {
+                                let new_idx = points.len();
+                                points.push([p.x, p.y, p.z]);
+                                
+                                let mut o_a = obs_a.clone();
+                                o_a.point_idx = new_idx;
+                                observations.push(o_a);
+                                new_idx
+                            };
+
+                            let mut o_b = obs_b.clone();
+                            o_b.point_idx = point_idx;
+                            observations.push(o_b);
+
+                            let x_bits_b = (obs_b.observed[0] as f32).to_bits();
+                            let y_bits_b = (obs_b.observed[1] as f32).to_bits();
+                            point_tracker.insert((obs_b.frame_idx, x_bits_b, y_bits_b), point_idx);
+                        }
+                    }
+                    Err(error) => {
+                        pair_errors.push(format!(
+                            "pair {}->{} failed: {error}",
+                            prev.frame_id, current_features.frame_id
+                        ));
+                    }
                 }
             }
+            prev_features = Some(current_features);
         }
 
         serde_json::to_string(&FrontendJniResult {
