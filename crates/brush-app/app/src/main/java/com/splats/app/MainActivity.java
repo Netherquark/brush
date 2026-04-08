@@ -153,6 +153,9 @@ public class MainActivity extends GameActivity {
         hideSystemUI();
 
         FilePicker.Register(this);
+        if (savedInstanceState == null) {
+            cleanupCachedMedia();
+        }
     }
 
 
@@ -472,6 +475,12 @@ public class MainActivity extends GameActivity {
         return name.substring(0, index);
     }
 
+    private void cleanupCachedMedia() {
+        File cacheDir = getCacheDir();
+        if (cacheDir != null) {
+            deleteFilesMatching(cacheDir, name -> name.startsWith("telemetry_csv_") || name.startsWith("telemetry_video_"));
+        }
+    }
 
     private void cleanupTelemetryOutputs() {
         File telemetryAppDir = getExternalFilesDir("telemetry");
