@@ -67,25 +67,35 @@ pub fn match_feature_sets(
         });
     }
 
-    let matcher = BFMatcher::new(NORM_HAMMING, true)?;
-    let mut raw_matches = Vector::<DMatch>::new();
-    matcher.train_match_def(&frame_a.descriptors, &frame_b.descriptors, &mut raw_matches)?;
+    let matcher = BFMatcher::new(NORM_HAMMING, false)?;
+    let mut knn_matches = Vector::<Vector<DMatch>>::new();
+    matcher.knn_train_match_def(&frame_a.descriptors, &frame_b.descriptors, &mut knn_matches, 2)?;
 
-    let mut matches: Vec<_> = raw_matches
+    let mut matches: Vec<_> = knn_matches
         .iter()
-        .filter(|m| m.distance <= config.max_hamming_distance)
-        .filter_map(|m| {
-            let query_index = usize::try_from(m.query_idx).ok()?;
-            let train_index = usize::try_from(m.train_idx).ok()?;
-            let query_point = *frame_a.keypoints.get(query_index)?;
-            let train_point = *frame_b.keypoints.get(train_index)?;
-            Some(FeatureMatch {
-                query_index,
-                train_index,
-                distance: m.distance,
-                query_point,
-                train_point,
-            })
+        .filter_map(|m_vec| {
+            if m_vec.len() < 2 {
+                return None;
+            }
+            let m1 = m_vec.get(0).ok()?;
+            let m2 = m_vec.get(1).ok()?;
+            
+            // Lowe's ratio test (e.g. 0.75) and absolute max distance
+            if m1.distance <= 0.75 * m2.distance && m1.distance <= config.max_hamming_distance {
+                let query_index = usize::try_from(m1.query_idx).ok()?;
+                let train_index = usize::try_from(m1.train_idx).ok()?;
+                let query_point = *frame_a.keypoints.get(query_index)?;
+                let train_point = *frame_b.keypoints.get(train_index)?;
+                Some(FeatureMatch {
+                    query_index,
+                    train_index,
+                    distance: m1.distance,
+                    query_point,
+                    train_point,
+                })
+            } else {
+                None
+            }
         })
         .collect();
 

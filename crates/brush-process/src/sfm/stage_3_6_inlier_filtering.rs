@@ -1,4 +1,5 @@
 use nalgebra::{Matrix3, Vector3};
+use opencv::prelude::MatTraitConst;
 
 use crate::{
     sfm::{

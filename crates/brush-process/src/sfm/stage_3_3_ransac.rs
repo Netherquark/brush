@@ -50,7 +50,7 @@ pub fn estimate_essential_matrix(
         &points_a,
         &points_b,
         &camera_matrix,
-        calib3d::RANSAC,
+        calib3d::USAC_MAGSAC,
         config.probability,
         config.threshold_px,
         config.max_iters,
@@ -68,11 +68,13 @@ pub fn estimate_essential_matrix(
 }
 
 fn camera_matrix(intrinsics: &CameraIntrinsics) -> opencv::Result<Mat> {
-    Mat::from_slice_2d(&[
-        [intrinsics.fx, 0.0, intrinsics.cx],
-        [0.0, intrinsics.fy, intrinsics.cy],
-        [0.0, 0.0, 1.0],
-    ])
+    let binding = [
+        intrinsics.fx, 0.0, intrinsics.cx,
+        0.0, intrinsics.fy, intrinsics.cy,
+        0.0, 0.0, 1.0,
+    ];
+    let tmp = Mat::from_slice(&binding)?;
+    tmp.reshape(1, 3)?.try_clone()
 }
 
 #[allow(dead_code)]

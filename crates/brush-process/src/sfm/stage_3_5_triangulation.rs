@@ -59,11 +59,13 @@ pub fn triangulate_inlier_points(
     )?;
 
     let mut output = Vec::with_capacity(indices.len());
+    let data = homogeneous.data_typed::<f64>()?;
+    let n = indices.len();
     for (column, feature_index) in indices.into_iter().enumerate() {
-        let x = *homogeneous.at_2d::<f64>(0, column as i32)?;
-        let y = *homogeneous.at_2d::<f64>(1, column as i32)?;
-        let z = *homogeneous.at_2d::<f64>(2, column as i32)?;
-        let w = *homogeneous.at_2d::<f64>(3, column as i32)?;
+        let x = data[column];
+        let y = data[n + column];
+        let z = data[2 * n + column];
+        let w = data[3 * n + column];
         if w.abs() < f64::EPSILON {
             continue;
         }
@@ -81,11 +83,13 @@ pub fn triangulate_inlier_points(
 
 fn projection_identity(intrinsics: &CameraIntrinsics) -> opencv::Result<Mat> {
     let k = camera_matrix(intrinsics)?;
-    let rt = Mat::from_slice_2d(&[
-        [1.0_f64, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-    ])?;
+    let rt_data = [
+        1.0_f64, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+    ];
+    let tmp = Mat::from_slice(&rt_data)?;
+    let rt = tmp.reshape(1, 3)?.try_clone()?;
     let mut projection = Mat::default();
     core::gemm(&k, &rt, 1.0, &Mat::default(), 0.0, &mut projection, 0)?;
     Ok(projection)
@@ -112,9 +116,11 @@ fn projection_from_pose(
 }
 
 fn camera_matrix(intrinsics: &CameraIntrinsics) -> opencv::Result<Mat> {
-    Mat::from_slice_2d(&[
-        [intrinsics.fx, 0.0, intrinsics.cx],
-        [0.0, intrinsics.fy, intrinsics.cy],
-        [0.0, 0.0, 1.0],
-    ])
+    let binding = [
+        intrinsics.fx, 0.0, intrinsics.cx,
+        0.0, intrinsics.fy, intrinsics.cy,
+        0.0, 0.0, 1.0,
+    ];
+    let tmp = Mat::from_slice(&binding)?;
+    tmp.reshape(1, 3)?.try_clone()
 }
