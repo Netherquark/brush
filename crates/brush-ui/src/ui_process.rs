@@ -202,8 +202,7 @@ impl UiProcess {
     pub fn connect_to_process(&self, process: brush_process::RunningProcess) {
         {
             let mut inner = self.write();
-            let reset = UiProcessInner::new(inner.burn_device.clone(), inner.ui_ctx.clone());
-            *inner = reset;
+            inner.clear();
         }
 
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -306,7 +305,7 @@ impl UiProcess {
 
     pub fn reset_session(&self) {
         let mut inner = self.write();
-        *inner = UiProcessInner::new(inner.burn_device.clone(), inner.ui_ctx.clone());
+        inner.clear();
         inner.session_reset_requested = true;
     }
 
@@ -390,6 +389,20 @@ impl UiProcessInner {
             ui_ctx,
             platform_actions: HashMap::new(),
         }
+    }
+
+    fn clear(&mut self) {
+        self.is_loading = false;
+        self.is_training = false;
+        let position = -Vec3::Z * 2.5;
+        let rotation = Quat::IDENTITY;
+        self.camera = Camera::new(Vec3::ZERO, Quat::IDENTITY, 0.8, 0.8, glam::vec2(0.5, 0.5));
+        self.controls = CameraController::new(position, rotation, CameraSettings::default());
+        self.splat_scale = None;
+        self.process_handle = None;
+        self.train_iter = 0;
+        self.train_paused = false;
+        // explicitly do NOT reset platform_actions, platform_events, ui_mode, or background_style
     }
 
     fn repaint(&self) {
