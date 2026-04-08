@@ -119,16 +119,8 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
                             Box::new(|| call_java_static("extractFrames")));
                         ctx.register_platform_action("choose_csv",
                             Box::new(|| call_java_static("chooseCsv")));
-                        ctx.register_platform_action("telemetry",
-                            Box::new(|| call_java_static("runTelemetry")));
-                        ctx.register_platform_action("pose_estimation",
-                            Box::new(|| call_java_static("runPoseEstimation")));
-                        ctx.register_platform_action("bundle_alignment",
-                            Box::new(|| call_java_static("runBundleAlignment")));
-                        ctx.register_platform_action("open_in_viewer",
-                            Box::new(|| call_java_static("openInViewer")));
-                        ctx.register_platform_action("save_ply",
-                            Box::new(|| call_java_static("savePly")));
+                        ctx.register_platform_action("run_train",
+                            Box::new(|| call_java_static("runTrain")));
                     }
 
                     Ok(Box::new(app))

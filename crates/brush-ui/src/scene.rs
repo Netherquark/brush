@@ -147,7 +147,7 @@ impl ScenePanel {
                 .stroke(egui::Stroke::NONE)
         };
 
-        // Row 1: File loading & video
+        // Row 1: Data selection
         ui.horizontal(|ui| {
             if ui.add(button("📁 File", blue)).clicked() {
                 load_option = Some(DataSource::PickFile);
@@ -158,44 +158,27 @@ impl ScenePanel {
             if ui.add(button(&mp4_label, blue)).clicked() {
                 process.call_platform_action("choose_mp4");
             }
-            let extract_label = if self.is_extracting { "🖼 Extracting..." } else { "🖼 Extract" };
-            if ui.add(button(extract_label, blue)).clicked() {
-                process.call_platform_action("extract_frames");
-            }
-        });
-
-        ui.add_space(4.0);
-
-        // Row 2: CSV & telemetry processing
-        ui.horizontal(|ui| {
             let csv_label = self.selected_csv.as_ref()
                 .map(|s| format!("📄 {}", s))
                 .unwrap_or_else(|| "📄 Choose CSV".to_string());
             if ui.add(button(&csv_label, green)).clicked() {
                 process.call_platform_action("choose_csv");
             }
-            let telemetry_label = if self.telemetry_running { "🛰 Running..." } else { "🛰 Telemetry" };
-            if ui.add(button(telemetry_label, green)).clicked() {
-                process.call_platform_action("telemetry");
-                self.telemetry_running = true;
-            }
-            if ui.add(button("📐 Pose Est.", green)).clicked() {
-                process.call_platform_action("pose_estimation");
-            }
         });
 
         ui.add_space(4.0);
 
-        // Row 3: Reconstruction & output
+        // Row 2: Pipeline execution
         ui.horizontal(|ui| {
-            if ui.add(button("📦 Bundle", purple)).clicked() {
-                process.call_platform_action("bundle_alignment");
+            let extract_label = if self.is_extracting { "🖼 Extracting..." } else { "🖼 Extract" };
+            if ui.add(button(extract_label, blue)).clicked() {
+                process.call_platform_action("extract_frames");
             }
-            if ui.add(button("👁 Viewer", purple)).clicked() {
-                process.call_platform_action("open_in_viewer");
-            }
-            if ui.add(button("💾 Save PLY", purple)).clicked() {
-                process.call_platform_action("save_ply");
+
+            let train_label = if self.telemetry_running { "🚂 Training..." } else { "🚂 Train" };
+            if ui.add(button(train_label, purple)).clicked() {
+                process.call_platform_action("run_train");
+                self.telemetry_running = true;
             }
         });
 
