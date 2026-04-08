@@ -40,7 +40,7 @@ pub fn build_stage_3_6_output(
     let mut observations = Vec::new();
 
     for point in triangulated {
-        if !point.point.iter().all(|value| value.is_finite()) {
+        if !point.point.iter().all(|value: &f64| value.is_finite()) {
             continue;
         }
         if point.point.z < config.min_depth || point.point.z > config.max_depth {
@@ -80,7 +80,7 @@ pub fn build_stage_3_6_output(
     })
 }
 
-fn mat3_from_opencv(matrix: &opencv::core::Mat) -> anyhow::Result<Matrix3<f64>> {
+pub(crate) fn mat3_from_opencv(matrix: &opencv::core::Mat) -> anyhow::Result<Matrix3<f64>> {
     Ok(Matrix3::new(
         *matrix.at_2d::<f64>(0, 0)?,
         *matrix.at_2d::<f64>(0, 1)?,
@@ -94,7 +94,7 @@ fn mat3_from_opencv(matrix: &opencv::core::Mat) -> anyhow::Result<Matrix3<f64>> 
     ))
 }
 
-fn vec3_from_opencv(vector: &opencv::core::Mat) -> anyhow::Result<Vector3<f64>> {
+pub(crate) fn vec3_from_opencv(vector: &opencv::core::Mat) -> anyhow::Result<Vector3<f64>> {
     Ok(Vector3::new(
         *vector.at_2d::<f64>(0, 0)?,
         *vector.at_2d::<f64>(1, 0)?,

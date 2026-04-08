@@ -1,6 +1,6 @@
 use opencv::{
     calib3d,
-    core::{self, Mat, Point2d, Point2f, Vector},
+    core::{Mat, Point2d, Point2f, Vector},
     prelude::*,
 };
 
