@@ -16,6 +16,8 @@ object OpenCvFrontendLib {
         framesJson: String,
         intrinsicsJson: String,
         configJson: String,
+        gpsJson: String,
+        imuJson: String,
     ): String
 
     @JvmStatic
@@ -24,12 +26,16 @@ object OpenCvFrontendLib {
         framesJson: String,
         intrinsicsJson: String,
         configJson: String = "{}",
+        gpsJson: String = "[]",
+        imuJson: String = "[]",
     ): String {
         checkWorkerThread()
         return runOpenCvFrontend(
             framesJson = framesJson,
             intrinsicsJson = intrinsicsJson,
             configJson = configJson,
+            gpsJson = gpsJson,
+            imuJson = imuJson,
         )
     }
 
@@ -37,11 +43,15 @@ object OpenCvFrontendLib {
         framesJson: String,
         intrinsicsJson: String,
         configJson: String = "{}",
+        gpsJson: String = "[]",
+        imuJson: String = "[]",
     ): String = withContext(Dispatchers.Default) {
         runOpenCvFrontend(
             framesJson = framesJson,
             intrinsicsJson = intrinsicsJson,
             configJson = configJson,
+            gpsJson = gpsJson,
+            imuJson = imuJson,
         )
     }
 

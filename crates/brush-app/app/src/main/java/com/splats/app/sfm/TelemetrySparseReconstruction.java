@@ -75,7 +75,7 @@ public final class TelemetrySparseReconstruction {
 
         SparseFrontendOutput frontendOutput = null;
         try {
-            frontendOutput = runNativeFrontend(frames, intrinsics);
+            frontendOutput = runNativeFrontend(frames, intrinsics, gps, imu);
             Log.i(
                     TAG,
                     frontendOutput.backend + " frontend produced " + frontendOutput.pointCount
@@ -173,7 +173,9 @@ public final class TelemetrySparseReconstruction {
 
     private static SparseFrontendOutput runNativeFrontend(
             List<FrameData> frames,
-            VideoIntrinsics intrinsics
+            VideoIntrinsics intrinsics,
+            JSONArray gps,
+            JSONArray imu
     ) throws Exception {
         JSONArray framesJson = new JSONArray();
         for (FrameData frame : frames) {
@@ -192,7 +194,9 @@ public final class TelemetrySparseReconstruction {
         String resultJson = OpenCvFrontendLib.runOpenCvFrontendSync(
                 framesJson.toString(),
                 intrinsicsJson.toString(),
-                "{}"
+                "{}",
+                gps.toString(),
+                imu.toString()
         );
 
         JSONObject result = new JSONObject(resultJson);
