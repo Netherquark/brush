@@ -23,6 +23,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed=ANDROID_ABI");
         println!("cargo:rerun-if-env-changed=OPENCV_LINK_PATHS");
         println!("cargo:rerun-if-env-changed=OPENCV_LINK_LIBS");
+        println!("cargo:rustc-env=ON_ANDROID=1");
 
         let link_paths = env::var("OPENCV_LINK_PATHS")
             .ok()
