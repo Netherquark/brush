@@ -57,10 +57,53 @@ WebGPU is still an upcoming standard, and as such, only Chrome 134+ on Windows a
 
 ### Android
 
-As a one time setup, make sure you have the Android SDK & NDK installed.
-- Check if ANDROID_NDK_HOME and ANDROID_HOME are set
-- Add the Android target to rust `rustup target add aarch64-linux-android`
-- Install cargo-ndk to manage building a lib `cargo install cargo-ndk`
+As a one-time setup, make sure you have the Android SDK & NDK installed.
+- Copy `.env.example` to `.env` and fill in the Android/OpenCV paths you want Android Studio to use
+- Or set `sdk.dir` / `ndk.dir` in `local.properties`
+- Add the Android target to rust: `rustup target add aarch64-linux-android`
+- Install cargo-ndk to manage building a lib: `cargo install cargo-ndk`
+
+**Building OpenCV Native Libraries**
+Brush uses custom OpenCV native libraries for Android cross-compilation. You must clone and build OpenCV 4.13.0 from source before building the main application.
+```bash
+git clone https://github.com/opencv/opencv.git
+cd opencv && git checkout 4.13.0
+mkdir build && cd build
+
+export ANDROID_NDK_HOME=/path/to/your/ndk/directory
+export ANDROID_SDK_HOME=/path/to/your/sdk/directory
+
+cmake -GNinja \
+  -DCMAKE_MAKE_PROGRAM=ninja-build \
+  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI="arm64-v8a" \
+  -DANDROID_PLATFORM=android-30 \
+  -DANDROID_SDK=$ANDROID_SDK_HOME \
+  -DBUILD_SHARED_LIBS=ON \
+  -DBUILD_opencv_java=OFF \
+  -DBUILD_opencv_js=OFF \
+  -DBUILD_ANDROID_PROJECTS=OFF \
+  -DBUILD_ANDROID_EXAMPLES=OFF \
+  -DBUILD_opencv_videoio=OFF \
+  -DBUILD_opencv_video=OFF \
+  -DBUILD_opencv_dnn=OFF \
+  -DBUILD_opencv_ml=OFF \
+  -DBUILD_opencv_photo=OFF \
+  -DBUILD_opencv_gapi=OFF \
+  -DBUILD_opencv_objdetect=OFF \
+  -DWITH_TBB=ON \
+  -DBUILD_TESTS=OFF \
+  -DBUILD_PERF_TESTS=OFF \
+  -DBUILD_EXAMPLES=OFF \
+  ..
+
+ninja-build
+```
+
+Android Studio now checks configuration in this order where applicable:
+- Gradle project properties / `local.properties`
+- workspace `.env`
+- regular process environment variables
 
 Each time you change the rust code, run
 - `cargo ndk -t arm64-v8a -o crates/brush-app/app/src/main/jniLibs/ build`

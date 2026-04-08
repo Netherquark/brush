@@ -63,59 +63,48 @@ public final class TelemetrySparseReconstruction {
         JSONArray gps = new JSONArray();
         JSONArray imu = new JSONArray();
 
-        for (FrameData frame : frames) {
+        for (int i = 0; i < frames.size(); i++) {
+            FrameData frame = frames.get(i);
             poses.put(poseJson(frame));
-            gps.put(gpsJson(frame.record));
+            gps.put(gpsJson(i, frame.record));
         }
 
-        List<List<FeatureMatch>> pairMatches = new ArrayList<>();
         for (int i = 0; i < frames.size() - 1; i++) {
-            FrameData a = frames.get(i);
-            FrameData b = frames.get(i + 1);
-            pairMatches.add(matchFrames(a, b));
-            imu.put(imuJson(a, b));
+            imu.put(imuJson(i, frames.get(i), i + 1, frames.get(i + 1)));
         }
 
-        List<FeatureTrack> tracks = buildTracks(frames, pairMatches);
-        int pointIndex = 0;
-        int matchCount = 0;
-        for (FeatureTrack track : tracks) {
-            if (track.observations.size() < 2) {
-                continue;
-            }
-
-            TrackObservation first = track.observations.get(0);
-            TrackObservation last = track.observations.get(track.observations.size() - 1);
-            double[] point = triangulate(
-                    frames.get(first.frameListIndex),
-                    frames.get(last.frameListIndex),
-                    intrinsics,
-                    first.xNative,
-                    first.yNative,
-                    last.xNative,
-                    last.yNative
+        SparseFrontendOutput frontendOutput = null;
+        try {
+            frontendOutput = runNativeFrontend(frames, intrinsics, gps, imu);
+            Log.i(
+                    TAG,
+                    frontendOutput.backend + " frontend produced " + frontendOutput.pointCount
+                            + " points and " + frontendOutput.matchCount + " observations"
             );
-            if (point == null) {
-                continue;
-            }
-            TrackCandidate candidate = evaluateTrackCandidate(track, frames, intrinsics, point);
-            if (candidate == null) {
-                continue;
-            }
-
-            points.put(arrayOf(candidate.point[0], candidate.point[1], candidate.point[2]));
-            for (TrackObservation observation : candidate.inlierObservations) {
-                FrameData frame = frames.get(observation.frameListIndex);
-                observations.put(observationJson(
-                        frame.record.getFrameIndex(),
-                        pointIndex,
-                        observation.xNative,
-                        observation.yNative
-                ));
-                matchCount += 1;
-            }
-            pointIndex += 1;
+        } catch (Exception e) {
+            Log.w(TAG, "Native OpenCV frontend failed, falling back to legacy Java sparse frontend", e);
         }
+
+        if (frontendOutput == null || frontendOutput.pointCount < 8) {
+            if (frontendOutput != null) {
+                Log.w(
+                        TAG,
+                        "Native OpenCV frontend produced only " + frontendOutput.pointCount
+                                + " points, falling back to legacy Java sparse frontend"
+                );
+            }
+            frontendOutput = runLegacyFrontend(frames, intrinsics);
+            Log.i(
+                    TAG,
+                    frontendOutput.backend + " frontend produced " + frontendOutput.pointCount
+                            + " points and " + frontendOutput.matchCount + " observations"
+            );
+        }
+
+        points = frontendOutput.points;
+        observations = frontendOutput.observations;
+        int pointIndex = frontendOutput.pointCount;
+        int matchCount = frontendOutput.matchCount;
 
         if (pointIndex < 8) {
             writeFallbackPly(plyFile, sequence.getRecords());
@@ -180,6 +169,111 @@ public final class TelemetrySparseReconstruction {
         }
 
         return new Result(plyFile, resultFile, pointIndex, matchCount);
+    }
+
+    private static SparseFrontendOutput runNativeFrontend(
+            List<FrameData> frames,
+            VideoIntrinsics intrinsics,
+            JSONArray gps,
+            JSONArray imu
+    ) throws Exception {
+        JSONArray framesJson = new JSONArray();
+        for (FrameData frame : frames) {
+            JSONObject frameJson = new JSONObject();
+            frameJson.put("frame_idx", frame.frameListIndex);
+            frameJson.put("image_path", frame.frameFile.getAbsolutePath());
+            framesJson.put(frameJson);
+        }
+
+        JSONObject intrinsicsJson = new JSONObject();
+        intrinsicsJson.put("fx", intrinsics.fx);
+        intrinsicsJson.put("fy", intrinsics.fy);
+        intrinsicsJson.put("cx", intrinsics.cx);
+        intrinsicsJson.put("cy", intrinsics.cy);
+
+        String resultJson = OpenCvFrontendLib.runOpenCvFrontendSync(
+                framesJson.toString(),
+                intrinsicsJson.toString(),
+                "{}",
+                gps.toString(),
+                imu.toString()
+        );
+
+        JSONObject result = new JSONObject(resultJson);
+        if (result.has("error")) {
+            throw new IllegalStateException(result.optString("error", "unknown native frontend error"));
+        }
+
+        JSONArray points = result.optJSONArray("points");
+        JSONArray observations = result.optJSONArray("observations");
+        if (points == null || observations == null) {
+            throw new IllegalStateException("Native frontend returned no points/observations payload");
+        }
+
+        return new SparseFrontendOutput(
+                "native-opencv",
+                points,
+                observations,
+                points.length(),
+                observations.length()
+        );
+    }
+
+    private static SparseFrontendOutput runLegacyFrontend(
+            List<FrameData> frames,
+            VideoIntrinsics intrinsics
+    ) throws Exception {
+        JSONArray points = new JSONArray();
+        JSONArray observations = new JSONArray();
+
+        List<List<FeatureMatch>> pairMatches = new ArrayList<>();
+        for (int i = 0; i < frames.size() - 1; i++) {
+            FrameData a = frames.get(i);
+            FrameData b = frames.get(i + 1);
+            pairMatches.add(matchFrames(a, b));
+        }
+
+        List<FeatureTrack> tracks = buildTracks(frames, pairMatches);
+        int pointIndex = 0;
+        int matchCount = 0;
+        for (FeatureTrack track : tracks) {
+            if (track.observations.size() < 2) {
+                continue;
+            }
+
+            TrackObservation first = track.observations.get(0);
+            TrackObservation last = track.observations.get(track.observations.size() - 1);
+            double[] point = triangulate(
+                    frames.get(first.frameListIndex),
+                    frames.get(last.frameListIndex),
+                    intrinsics,
+                    first.xNative,
+                    first.yNative,
+                    last.xNative,
+                    last.yNative
+            );
+            if (point == null) {
+                continue;
+            }
+            TrackCandidate candidate = evaluateTrackCandidate(track, frames, intrinsics, point);
+            if (candidate == null) {
+                continue;
+            }
+
+            points.put(arrayOf(candidate.point[0], candidate.point[1], candidate.point[2]));
+            for (TrackObservation observation : candidate.inlierObservations) {
+                observations.put(observationJson(
+                        observation.frameListIndex,
+                        pointIndex,
+                        observation.xNative,
+                        observation.yNative
+                ));
+                matchCount += 1;
+            }
+            pointIndex += 1;
+        }
+
+        return new SparseFrontendOutput("legacy-java", points, observations, pointIndex, matchCount);
     }
 
     private static void writeFallbackPly(File plyFile, List<PoseStamp> records) throws Exception {
@@ -250,7 +344,7 @@ public final class TelemetrySparseReconstruction {
             if (features.size() < 12) {
                 continue;
             }
-            frames.add(new FrameData(record, image, features, buildCameraPose(record)));
+            frames.add(new FrameData(frames.size(), record, frameFile, image, features, buildCameraPose(record)));
         }
         return frames;
     }
@@ -594,19 +688,19 @@ public final class TelemetrySparseReconstruction {
         return pose;
     }
 
-    private static JSONObject gpsJson(PoseStamp record) throws Exception {
+    private static JSONObject gpsJson(int frameListIndex, PoseStamp record) throws Exception {
         JSONObject gps = new JSONObject();
-        gps.put("frame_idx", record.getFrameIndex());
+        gps.put("frame_idx", frameListIndex);
         gps.put("enu_position", arrayOf(record.getEnuE(), record.getEnuN(), record.getEnuU()));
         gps.put("weight", 0.2);
         return gps;
     }
 
-    private static JSONObject imuJson(FrameData a, FrameData b) throws Exception {
+    private static JSONObject imuJson(int frameAIndex, FrameData a, int frameBIndex, FrameData b) throws Exception {
         double[][] delta = matMul(transpose(a.cameraPose.rotationWorldToCamera), b.cameraPose.rotationWorldToCamera);
         JSONObject imu = new JSONObject();
-        imu.put("frame_a", a.record.getFrameIndex());
-        imu.put("frame_b", b.record.getFrameIndex());
+        imu.put("frame_a", frameAIndex);
+        imu.put("frame_b", frameBIndex);
         imu.put("delta_rotation", matrixToJson(delta));
         imu.put("weight", 0.05);
         return imu;
@@ -838,14 +932,41 @@ public final class TelemetrySparseReconstruction {
         }
     }
 
+    private static final class SparseFrontendOutput {
+        final String backend;
+        final JSONArray points;
+        final JSONArray observations;
+        final int pointCount;
+        final int matchCount;
+
+        SparseFrontendOutput(String backend, JSONArray points, JSONArray observations, int pointCount, int matchCount) {
+            this.backend = backend;
+            this.points = points;
+            this.observations = observations;
+            this.pointCount = pointCount;
+            this.matchCount = matchCount;
+        }
+    }
+
     private static final class FrameData {
+        final int frameListIndex;
         final PoseStamp record;
+        final File frameFile;
         final GrayImage image;
         final List<FeaturePoint> features;
         final CameraPose cameraPose;
 
-        FrameData(PoseStamp record, GrayImage image, List<FeaturePoint> features, CameraPose cameraPose) {
+        FrameData(
+                int frameListIndex,
+                PoseStamp record,
+                File frameFile,
+                GrayImage image,
+                List<FeaturePoint> features,
+                CameraPose cameraPose
+        ) {
+            this.frameListIndex = frameListIndex;
             this.record = record;
+            this.frameFile = frameFile;
             this.image = image;
             this.features = features;
             this.cameraPose = cameraPose;

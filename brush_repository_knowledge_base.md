@@ -50,9 +50,10 @@ The repository is a hybrid workspace bridging an Android application and a highl
 During analysis, major gaps in the pipeline were identified regarding the integration of native SfM implementations. We are actively replacing the old Java-based fallback SfM with a high-performance native pipeline using OpenCV 4.13.0. 
 
 **OpenCV Asset Integration (Completed):**
+- **Custom Build Environment**: OpenCV 4.13.0 must be built out-of-tree using a specialized `cmake` command invoking the `android-30` platform and targeting `arm64-v8a`. The build intentionally strips Java/JS wrappers, UI projects, ML modules, and examples (`-DBUILD_opencv_java=OFF`, `-DBUILD_ANDROID_PROJECTS=OFF`, etc.) to significantly reduce the `.so` artifact size, ensuring Android Studio can bundle it without bloat.
 - **Dynamic Libraries**: Prebuilt OpenCV 4.13.0 and TBB `.so` files are located in `crates/brush-app/app/src/main/jniLibs/arm64-v8a/`. 
 - **JNI Loading**: Due to Android's dynamic linker constraints, these libraries must be explicitly loaded in `MainActivity.java` via `System.loadLibrary` (order: `tbb` -> `opencv_core` -> `opencv_imgproc` -> ... -> `brush_app`).
-- **Headers**: C++ headers are in `third_party/opencv/include/`.
+- **Headers**: C++ headers retrieved during the `cmake` phase are placed in `third_party/opencv/include/`.
 
 **Build System & Sandbox Workarounds (Optimized):**
 To address the 30-minute compilation bottleneck and Flatpak sandbox restrictions:
@@ -64,11 +65,11 @@ To address the 30-minute compilation bottleneck and Flatpak sandbox restrictions
 **The Rust SfM Pipeline (In Progress):**
 In `crates/brush-process/src/sfm/mod.rs`, the core pipeline is being implemented:
 - **Stage 3.1: Feature Extraction (Completed)**: Using native OpenCV ORB with grayscale conversion and `features2d` module.
-- **Stage 3.2: Matching (Planned)**: Using `BFMatcher` and GPS-based neighborhood queries.
-- **Stage 3.3: RANSAC**: Planned.
-- **Stage 3.4: Pose Recovery**: Planned.
-- **Stage 3.5: Triangulation**: Planned.
-- **Stage 3.6: Inlier Filtering**: Planned.
+- **Stage 3.2: Matching (Completed)**: Using `knnMatch` with Lowe's ratio test and Hamming distance thresholding.
+- **Stage 3.3: RANSAC (Completed)**: Filtering matches via Epipolar Geometry (`USAC_MAGSAC`).
+- **Stage 3.4: Pose Recovery (Completed)**: Recovering `R` and `t` matrices.
+- **Stage 3.5: Triangulation (Completed)**: Transforming 2D points into triangulated 3D spatial points.
+- **Stage 3.6: Inlier Filtering (Completed)**: Keeping only triangulated points with positive Z coordinates and minimal reprojection error.
 
 
 **UI Redundancies & Dead Code:**
