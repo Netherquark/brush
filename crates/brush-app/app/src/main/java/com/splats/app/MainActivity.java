@@ -236,6 +236,9 @@ public class MainActivity extends GameActivity {
                 Uri uri = data.getData();
                 if (uri != null) {
                     selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
+                    if (selectedVideoFile != null) {
+                        notifyPlatformEvent("mp4_picked", selectedVideoFile.getAbsolutePath());
+                    }
                     VideoFrameExtractor.extractFrames(this, uri, new VideoFrameExtractor.ExtractionCallback() {
                         @Override
                         public void onFinished() {
@@ -249,11 +252,13 @@ public class MainActivity extends GameActivity {
                             Log.e(TAG, "Frame extraction failed", e);
                             Toast.makeText(MainActivity.this, "Extraction failed: " + e.getMessage(),
                                     Toast.LENGTH_SHORT).show();
+                            notifyPlatformEvent("extraction_failed", "");
                         }
                     });
                 }
             } else {
                 Toast.makeText(this, "No video selected", Toast.LENGTH_SHORT).show();
+                notifyPlatformEvent("extraction_failed", "");
             }
             // Do NOT call FilePicker.onPicked — this never goes through Rust
             super.onActivityResult(requestCode, resultCode, data);
@@ -294,9 +299,14 @@ public class MainActivity extends GameActivity {
     }
 
     private void startTelemetryPreprocessIfReady() {
-        if (telemetryRunning) return;
-        if (selectedCsvFile == null || selectedVideoFile == null) return;
-        if (!selectedCsvFile.exists() || !selectedVideoFile.exists()) return;
+        if (telemetryRunning) {
+            notifyPlatformEvent("telemetry_failed", "Already running");
+            return;
+        }
+        if (selectedCsvFile == null || selectedVideoFile == null || !selectedCsvFile.exists() || !selectedVideoFile.exists()) {
+            notifyPlatformEvent("telemetry_failed", "Missing required files");
+            return;
+        }
 
         cleanupTelemetryOutputs();
         telemetryRunning = true;
@@ -345,6 +355,7 @@ public class MainActivity extends GameActivity {
                     String msg = error.getMessage() != null ? error.getMessage() : "Telemetry preprocess failed";
                     Toast.makeText(MainActivity.this, "Telemetry preprocess failed", Toast.LENGTH_LONG).show();
                     Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                    notifyPlatformEvent("telemetry_failed", "");
                 }
             }
         };
