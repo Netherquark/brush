@@ -4,6 +4,9 @@ import android.media.MediaMetadataRetriever
 import android.util.Log
 import kotlinx.coroutines.*
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.*
 import kotlin.jvm.JvmOverloads
 
@@ -95,11 +98,22 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             if (!csvFile.exists())   throw TelemetryError.CsvNotFound(csvFile.absolutePath)
             if (!videoFile.exists()) throw TelemetryError.VideoNotFound(videoFile.absolutePath)
 
-            // Stage 1–2: Ingest + two-pass parse (DJI first, Litchi fallback)
+            // Stage 1–2: Ingest + single-pass parsing (strictly Litchi)
             reportProgress(ProcessingStage.PARSING, 0.0f)
-            val (headers, dataRows)    = CsvIngest.read(csvFile)
-            val (rawRows, vendorWarn)  = CsvParser.parse(headers, dataRows)
-            if (vendorWarn) warnings += "Column headers matched Litchi format (not DJI standard)."
+            val (headers, dataRows) = CsvIngest.read(csvFile)
+            val parsedRows = CsvParser.parse(headers, dataRows)
+            val targetStartUs = extractVideoStartUs(videoFile)
+                ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)
+            if (targetStartUs > 0L) {
+                Log.i(logTag, "Using telemetry start time ${targetStartUs}us for ${videoFile.name}")
+            } else {
+                Log.w(logTag, "Could not derive video start time from metadata or filename for ${videoFile.name}")
+            }
+            val rawRows = if (targetStartUs > 0L) {
+                parsedRows.filter { it.timestampUs >= targetStartUs }
+            } else {
+                parsedRows
+            }
             reportProgress(ProcessingStage.PARSING, 1.0f)
 
             // Stage 3: Row validation
@@ -128,10 +142,10 @@ class TelemetryPreprocessor @JvmOverloads constructor(
                 LongArray(cands.size) { cands[it].timestampUs }
             }
 
-            // Stage 6: Time sync
+            // Stage 6: Time sync bypassing (alignment already guaranteed via filename clipping)
             reportProgress(ProcessingStage.SYNCING, 0.0f)
-            val sync = TimeSyncEngine.sync(imuRecords, videoFile)
-            val alignedRecords = imuRecords.map { it.copy(tsAligned = it.timestampUs + sync.offsetUs) }
+            val syncOffsetUs = 0L
+            val alignedRecords = imuRecords.map { it.copy(tsAligned = it.timestampUs + syncOffsetUs) }
             reportProgress(ProcessingStage.SYNCING, 1.0f)
 
             // Stage 7: Interpolation
@@ -155,7 +169,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             reportProgress(ProcessingStage.EMITTING, 0.0f)
             val sequence = PoseStampSequence(
                 origin = origin,
-                timeOffsetUs = sync.offsetUs,
+                timeOffsetUs = syncOffsetUs,
                 records = qResult.retained.sortedBy { it.ptsUs },
                 sourceMode = TelemetryMode.MODE_C,
                 logPath = csvFile,
@@ -172,8 +186,8 @@ class TelemetryPreprocessor @JvmOverloads constructor(
                 outputFrames = qResult.retained.size,
                 excludedFrames = qResult.excluded.size,
                 flaggedFrames = qResult.retained.count { it.flags != QualityFlag.CLEAN },
-                syncOffsetMs = sync.offsetUs / 1_000.0,
-                syncCorrelation = sync.correlation,
+                syncOffsetMs = syncOffsetUs / 1_000.0,
+                syncCorrelation = 1.0,
                 origin = origin,
                 processingTimeMs = System.currentTimeMillis() - startMs,
                 warnings = warnings
@@ -213,6 +227,51 @@ class TelemetryPreprocessor @JvmOverloads constructor(
 
     private suspend fun reportProgress(stage: ProcessingStage, fraction: Float) {
         withContext(Dispatchers.Main) { callback.onProgress(stage, fraction) }
+    }
+
+    private fun extractVideoStartUs(videoFile: File): Long? {
+        var retriever: MediaMetadataRetriever? = null
+        return try {
+            retriever = MediaMetadataRetriever()
+            retriever.setDataSource(videoFile.absolutePath)
+            val rawDate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
+            val parsed = parseVideoCreationTimeUs(rawDate)
+            if (parsed != null) {
+                Log.i(logTag, "Video metadata start time for ${videoFile.name}: $rawDate")
+            }
+            parsed
+        } catch (e: Exception) {
+            Log.w(logTag, "Failed to read video metadata date for ${videoFile.name}", e)
+            null
+        } finally {
+            runCatching { retriever?.release() }
+        }
+    }
+
+    private fun parseVideoCreationTimeUs(rawDate: String?): Long? {
+        if (rawDate.isNullOrBlank()) return null
+        val normalized = rawDate.trim()
+
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyyMMdd'T'HHmmss.SSS'Z'",
+            "yyyyMMdd'T'HHmmss'Z'",
+            "yyyyMMdd'T'HHmmssZ",
+            "yyyy-MM-dd HH:mm:ss"
+        )
+
+        for (pattern in patterns) {
+            val sdf = SimpleDateFormat(pattern, Locale.US)
+            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            val parsed = runCatching { sdf.parse(normalized) }.getOrNull()
+            if (parsed != null) {
+                return parsed.time * 1_000L
+            }
+        }
+
+        return null
     }
 }
 

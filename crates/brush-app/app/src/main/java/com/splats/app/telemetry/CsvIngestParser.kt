@@ -8,64 +8,23 @@ import android.util.Log
 
 // ─── Column name mapping ──────────────────────────────────────────────────────
 
-/**
- * Maps canonical field names to the two known vendor header variants.
- * DJI aliases are checked only on the DJI pass.
- * Litchi aliases are checked only on the Litchi pass.
- */
 private data class HeaderAliases(
-    val dji: List<String>,
-    val litchi: List<String> = emptyList()
+    val aliases: List<String>
 )
 
 private object ColumnMap {
-    val TIMESTAMP    = HeaderAliases(
-        dji = listOf("time(millisecond)", "timestamps_ns"),
-        litchi = listOf("datetime(utc)")
-    )
-    val LAT          = HeaderAliases(
-        dji = listOf("latitude", "osd.latitude"),
-        litchi = listOf("gps(0)[latitude]")
-    )
-    val LON          = HeaderAliases(
-        dji = listOf("longitude", "osd.longitude"),
-        litchi = listOf("gps(0)[longitude]")
-    )
-    val ALT          = HeaderAliases(
-        dji = listOf("altitude(m)", "osd.altitude[ft]", "osd.height[ft]", "altitude_ft"),
-        litchi = listOf("altitude(m)")
-    )
-    val HEADING      = HeaderAliases(
-        dji = listOf("compass_heading(degrees)", "yaw"),
-        litchi = listOf("yaw(deg)")
-    )
-    val GIMBAL_PITCH = HeaderAliases(
-        dji = listOf("gimbal_pitch(degrees)", "gimbal.pitch", "gimbal_pitch"),
-        litchi = listOf("gimbalpitchraw")
-    )
-    val VEL_N        = HeaderAliases(
-        dji = listOf("speed_n(m/s)", "osd.yspeed[mph]"),
-        litchi = listOf("velocityy(mps)")
-    )
-    val VEL_E        = HeaderAliases(
-        dji = listOf("speed_e(m/s)", "osd.xspeed[mph]"),
-        litchi = listOf("velocityx(mps)")
-    )
-    val VEL_D        = HeaderAliases(
-        dji = listOf("speed_d(m/s)", "osd.zspeed[mph]", "vertical_speed_mph"),
-        litchi = listOf("velocityz(mps)")
-    )
-    val HDOP         = HeaderAliases(
-        dji = listOf("gps(accuracy)", "osd.gpslevel", "osd.gpsnum", "satellites")
-    )
-    val FIX_TYPE     = HeaderAliases(
-        dji = listOf("gps(fixType)", "osd.gpslevel"),
-        litchi = listOf("fixType")
-    )
-    val SATELLITES   = HeaderAliases(
-        dji = listOf("satellites", "osd.gpsnum"),
-        litchi = listOf("satellites")
-    )
+    val TIMESTAMP    = HeaderAliases(listOf("datetime(utc)"))
+    val LAT          = HeaderAliases(listOf("latitude"))
+    val LON          = HeaderAliases(listOf("longitude"))
+    val ALT          = HeaderAliases(listOf("altitude(m)"))
+    val HEADING      = HeaderAliases(listOf("yaw(deg)"))
+    val GIMBAL_PITCH = HeaderAliases(listOf("gimbalpitchraw"))
+    val VEL_N        = HeaderAliases(listOf("velocityy(mps)"))
+    val VEL_E        = HeaderAliases(listOf("velocityx(mps)"))
+    val VEL_D        = HeaderAliases(listOf("velocityz(mps)"))
+    val HDOP         = HeaderAliases(emptyList()) // Not usually in Litchi
+    val FIX_TYPE     = HeaderAliases(listOf("fixType"))
+    val SATELLITES   = HeaderAliases(listOf("satellites"))
 }
 
 // ─── CSV Ingest ───────────────────────────────────────────────────────────────
@@ -169,53 +128,71 @@ internal object CsvIngest {
 /**
  * Stage 2 — Type-safe parsing.
  *
- * Resolves header names to column indices (DJI first, Litchi second).
+ * Resolves Litchi header names to column indices.
  * Coerces raw strings into typed [TelRow] instances.
  * Litchi "datetime(utc)" strings are converted to microseconds since epoch.
  */
 internal object CsvParser {
     private const val TAG = "TelemetryCsv"
+    private val filenameDateTimeRegex = Regex("""(\d{4}-\d{2}-\d{2})[ _](\d{2})[:_-](\d{2})[:_-](\d{2})""")
+    private val filenameTimeRegex = Regex("""(?<!\d)(\d{2})[:_-](\d{2})[:_-](\d{2})(?!\d)""")
 
-    /**
-     * Attempt DJI column map first, then Litchi.
-     * If both fail, raises [TelemetryError.InsufficientRecords].
-     * Returns (rows, vendorWarning) — vendorWarning is true if the second
-     * (Litchi) pass was needed, so the caller can record it in the report.
-     */
     fun parse(
         headers: List<String>,
-        dataRows: List<List<String>>
-    ): Pair<List<TelRow>, Boolean> {
+        dataRows: List<List<String>>,
+        targetStartUs: Long = 0L
+    ): List<TelRow> {
         Log.i(TAG, "Parse headers raw: ${headers.joinToString("|")}")
         Log.i(TAG, "Parse headers norm: ${headers.map { normalizeHeader(it) }.joinToString("|")}")
-        // First pass: DJI
         return try {
-            val rows = parseWithMap(headers, dataRows, vendorIndex = 0)
-            Pair(rows, false)
-        } catch (e: TelemetryError.InsufficientRecords) {
-            // Second pass: Litchi (spec §6.2 — Litchi vs DJI header mismatch)
-            try {
-                val rows = parseWithMap(headers, dataRows, vendorIndex = 1)
-                Pair(rows, true)   // vendorWarning = true
-            } catch (e2: TelemetryError.InsufficientRecords) {
-                throw TelemetryError.InsufficientRecords(0)
+            val rows = parseInternal(headers, dataRows)
+            if (targetStartUs > 0) {
+                Log.i(TAG, "Filtering CSV to start at time $targetStartUs")
+                rows.filter { it.timestampUs >= targetStartUs }
+            } else {
+                rows
             }
+        } catch (e: TelemetryError.InsufficientRecords) {
+            throw TelemetryError.InsufficientRecords(0)
         }
     }
 
-    /**
-     * Internal parse using vendor index 0 = DJI, 1 = Litchi.
-     */
-    private fun parseWithMap(
+    fun parseStartTimeFromFilename(filename: String, rows: List<TelRow>): Long {
+        val dateTimeMatch = filenameDateTimeRegex.find(filename)
+        if (dateTimeMatch != null) {
+            val (date, hr, min, sec) = dateTimeMatch.destructured
+            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            return try {
+                sdf.parse("$date $hr:$min:$sec")?.time?.times(1_000L) ?: 0L
+            } catch (e: Exception) {
+                0L
+            }
+        }
+
+        val baseDateUs = rows.firstOrNull { it.timestampUs > 0L }?.timestampUs ?: return 0L
+        val timeMatch = filenameTimeRegex.find(filename) ?: return 0L
+        val (hr, min, sec) = timeMatch.destructured
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("UTC")
+        return try {
+            val dayStartUs = (baseDateUs / 86_400_000_000L) * 86_400_000_000L
+            val dayStart = sdf.format(java.util.Date(dayStartUs / 1_000L))
+                .substring(0, 10)
+            sdf.parse("$dayStart $hr:$min:$sec")?.time?.times(1_000L) ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    private fun parseInternal(
         headers: List<String>,
-        dataRows: List<List<String>>,
-        vendorIndex: Int
+        dataRows: List<List<String>>
     ): List<TelRow> {
         val lower = headers.map { normalizeHeader(it) }
 
-        fun resolve(aliases: HeaderAliases): Int? {
-            val candidates = if (vendorIndex == 0) aliases.dji else aliases.litchi
-            for (alias in candidates) {
+        fun resolve(headerAliases: HeaderAliases): Int? {
+            for (alias in headerAliases.aliases) {
                 val idx = lower.indexOf(normalizeHeader(alias))
                 if (idx >= 0) return idx
             }
@@ -232,24 +209,20 @@ internal object CsvParser {
         val iVelN       = resolve(ColumnMap.VEL_N)      ?: throw TelemetryError.InsufficientRecords(0)
         val iVelE       = resolve(ColumnMap.VEL_E)      ?: throw TelemetryError.InsufficientRecords(0)
         val iVelD       = resolve(ColumnMap.VEL_D)      ?: throw TelemetryError.InsufficientRecords(0)
-        val iHdop       = resolve(ColumnMap.HDOP)       ?: throw TelemetryError.InsufficientRecords(0)
+        val iHdop       = resolve(ColumnMap.HDOP)
         val iFixType    = resolve(ColumnMap.FIX_TYPE)
         val iSatellites = resolve(ColumnMap.SATELLITES)
 
-        val tsHeader = lower[iTs]
         val altHeader = lower[iAlt]
         val velNHeader = lower[iVelN]
         val velEHeader = lower[iVelE]
         val velDHeader = lower[iVelD]
-        val hdopHeader = lower[iHdop]
+        val hdopHeader = iHdop?.let { lower[it] }
         val fixTypeHeader = iFixType?.let { lower[it] }
-
-        // Detect whether we're reading a Litchi file (datetime vs DJI timestamps).
-        val isLitchi = tsHeader.contains("datetime")
 
         return dataRows.mapNotNull { cols ->
             runCatching {
-                val tsUs = parseTimestampUs(cols.getOrElse(iTs) { "" }, tsHeader, isLitchi)
+                val tsUs = parseLitchiDateTime(cols.getOrElse(iTs) { "" })
                 TelRow(
                     timestampUs = tsUs,
                     lat         = cols.getOrElse(iLat)     { "0" }.toDouble(),
@@ -260,23 +233,17 @@ internal object CsvParser {
                     velN        = parseSpeedMps(cols.getOrElse(iVelN) { "0" }, velNHeader),
                     velE        = parseSpeedMps(cols.getOrElse(iVelE) { "0" }, velEHeader),
                     velD        = parseSpeedMps(cols.getOrElse(iVelD) { "0" }, velDHeader),
-                    hdop        = parseHdop(cols.getOrElse(iHdop) { "0" }, hdopHeader),
+                    hdop        = iHdop?.let {
+                        parseHdop(cols.getOrElse(it) { "0" }, hdopHeader ?: "")
+                    } ?: 1.0,
                     fixType     = iFixType?.let {
                         parseFixType(cols.getOrElse(it) { "0" }, fixTypeHeader ?: "")
                     } ?: 3,
-                    satellites  = iSatellites?.let { cols.getOrElse(it) { "0" }.toInt() } ?: 0
+                    satellites  = iSatellites?.let {
+                        cols.getOrElse(it) { "0" }.toIntOrNull() ?: 0
+                    } ?: 0
                 )
             }.getOrNull()   // malformed rows are dropped; row validator counts them
-        }
-    }
-
-    private fun parseTimestampUs(raw: String, header: String, isLitchi: Boolean): Long {
-        if (isLitchi) return parseLitchiDateTime(raw)
-        val value = raw.toDoubleOrNull() ?: return 0L
-        return when {
-            header.contains("timestamps_ns") -> (value / 1_000.0).toLong()
-            header.contains("time(millisecond)") -> (value * 1_000.0).toLong()
-            else -> (value * 1_000.0).toLong()
         }
     }
 
@@ -343,8 +310,6 @@ internal object CsvParser {
 private fun looksLikeHeaderCells(cells: List<String>): Boolean {
     val norm = cells.map { normalizeHeader(it) }
     return norm.any { it.contains("latitude") }
-        || norm.any { it.contains("gps(0)[latitude]") }
-        || norm.any { it.contains("time(millisecond)") }
         || norm.any { it.contains("datetime(utc)") }
 }
 

@@ -108,6 +108,10 @@ public class MainActivity extends GameActivity {
         });
     }
 
+    public static void runTelemetry() {
+        runTrain();
+    }
+
 
 
     // ── Instance fields ───────────────────────────────────────────────────────
@@ -375,12 +379,31 @@ public class MainActivity extends GameActivity {
         try {
             if (uri == null) return null;
 
-            String name = queryDisplayName(uri);
-            String ext = fallbackExt;
-            if (name != null && name.contains(".")) {
-                ext = name.substring(name.lastIndexOf('.'));
+            String originalName = queryDisplayName(uri);
+            if (originalName == null || originalName.trim().isEmpty()) {
+                String lastSegment = uri.getLastPathSegment();
+                if (lastSegment != null && !lastSegment.trim().isEmpty()) {
+                    originalName = lastSegment;
+                }
             }
-            File out = new File(getCacheDir(), prefix + System.currentTimeMillis() + ext);
+
+            String ext = fallbackExt;
+            if (originalName != null && originalName.contains(".")) {
+                ext = originalName.substring(originalName.lastIndexOf('.'));
+            }
+
+            String safeName = (originalName != null) ? originalName.replaceAll("[^a-zA-Z0-9.\\-_]", "_") : System.currentTimeMillis() + ext;
+            File out = new File(getCacheDir(), safeName);
+            if (out.exists()) {
+                String baseName = stripExtension(safeName);
+                String fileExt = safeName.contains(".")
+                        ? safeName.substring(safeName.lastIndexOf('.'))
+                        : ext;
+                out = new File(
+                        getCacheDir(),
+                        prefix + baseName + "_" + System.currentTimeMillis() + fileExt
+                );
+            }
 
             try (InputStream in = getContentResolver().openInputStream(uri);
                  OutputStream outStream = new FileOutputStream(out)) {
