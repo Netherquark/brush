@@ -36,10 +36,27 @@ public final class TelemetrySparseReconstruction {
             throw new IllegalStateException("Extracted frames directory is missing");
         }
 
+        int filesOnDisk = countExtractedFrames(framesDir);
+        Log.i(TAG, "Preparing sparse reconstruction with "
+                + sequence.getRecords().size() + " pose record(s), "
+                + filesOnDisk + " extracted frame file(s) in " + framesDir.getAbsolutePath());
+
         VideoIntrinsics intrinsics = estimateIntrinsics(sequence.getVideoPath());
-        List<FrameData> frames = loadFramesForSequence(sequence, framesDir);
+        FrameLoadSummary frameSummary = loadFramesForSequence(sequence, framesDir);
+        List<FrameData> frames = frameSummary.frames;
+        Log.i(TAG, "Matched " + frames.size() + "/" + frameSummary.expectedCount
+                + " pose frame(s) to extracted images");
+        if (!frameSummary.missingFrameNames.isEmpty()) {
+            Log.w(TAG, "Missing extracted frame files (sample): " + frameSummary.missingFrameNames);
+        }
         if (frames.size() < 2) {
-            throw new IllegalStateException("Could not load enough extracted frames");
+            throw new IllegalStateException(
+                    "Could not load enough extracted frames. matched=" + frames.size()
+                            + ", expected=" + frameSummary.expectedCount
+                            + ", filesOnDisk=" + filesOnDisk
+                            + ", dir=" + framesDir.getAbsolutePath()
+                            + ", missingSample=" + frameSummary.missingFrameNames
+            );
         }
 
         JSONArray gps = new JSONArray();
@@ -95,16 +112,20 @@ public final class TelemetrySparseReconstruction {
     }
 
 
-    private static List<FrameData> loadFramesForSequence(PoseStampSequence sequence, File framesDir) {
+    private static FrameLoadSummary loadFramesForSequence(PoseStampSequence sequence, File framesDir) {
         List<FrameData> frames = new ArrayList<>();
+        List<String> missing = new ArrayList<>();
         for (PoseStamp record : sequence.getRecords()) {
             File frameFile = new File(framesDir, String.format("frame_%03d.jpg", record.getFrameIndex()));
             if (!frameFile.exists()) {
+                if (missing.size() < 12) {
+                    missing.add(frameFile.getName());
+                }
                 continue;
             }
             frames.add(new FrameData(frames.size(), record, frameFile, buildCameraPose(record)));
         }
-        return frames;
+        return new FrameLoadSummary(frames, sequence.getRecords().size(), missing);
     }
 
 
@@ -351,6 +372,18 @@ public final class TelemetrySparseReconstruction {
         }
     }
 
+    private static final class FrameLoadSummary {
+        final List<FrameData> frames;
+        final int expectedCount;
+        final List<String> missingFrameNames;
+
+        FrameLoadSummary(List<FrameData> frames, int expectedCount, List<String> missingFrameNames) {
+            this.frames = frames;
+            this.expectedCount = expectedCount;
+            this.missingFrameNames = missingFrameNames;
+        }
+    }
+
     private static final class CameraPose {
         final double[][] rotationWorldToCamera;
         final double[] translation;
@@ -378,5 +411,13 @@ public final class TelemetrySparseReconstruction {
             this.cx = cx;
             this.cy = cy;
         }
+    }
+
+    private static int countExtractedFrames(File dir) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) {
+            return 0;
+        }
+        File[] files = dir.listFiles((ignored, name) -> name.startsWith("frame_") && name.endsWith(".jpg"));
+        return files != null ? files.length : 0;
     }
 }

@@ -132,6 +132,29 @@ pub struct ScenePanel {
 }
 
 impl ScenePanel {
+    fn short_button_name(name: &str, max_chars: usize) -> String {
+        let char_count = name.chars().count();
+        if char_count <= max_chars {
+            return name.to_string();
+        }
+
+        let keep = max_chars.saturating_sub(3);
+        let prefix_len = keep / 2;
+        let suffix_len = keep.saturating_sub(prefix_len);
+
+        let prefix: String = name.chars().take(prefix_len).collect();
+        let suffix: String = name
+            .chars()
+            .rev()
+            .take(suffix_len)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+
+        format!("{prefix}...{suffix}")
+    }
+
     fn draw_load_buttons(&mut self, ui: &mut egui::Ui, process: &UiProcess) -> Option<DataSource> {
         let button_height = 28.0;
         let button_width = 100.0;
@@ -165,13 +188,13 @@ impl ScenePanel {
                 load_option = Some(DataSource::PickFile);
             }
             let mp4_label = self.selected_mp4.as_ref()
-                .map(|s| format!("🎬 {}", s))
+                .map(|s| format!("🎬 {}", Self::short_button_name(s, 18)))
                 .unwrap_or_else(|| "🎬 Choose MP4".to_string());
             if ui.add_enabled(!is_busy, button(&mp4_label, blue, !is_busy)).clicked() {
                 process.call_platform_action("choose_mp4");
             }
             let csv_label = self.selected_csv.as_ref()
-                .map(|s| format!("📄 {}", s))
+                .map(|s| format!("📄 {}", Self::short_button_name(s, 18)))
                 .unwrap_or_else(|| "📄 Choose CSV".to_string());
             if ui.add_enabled(!is_busy, button(&csv_label, green, !is_busy)).clicked() {
                 process.call_platform_action("choose_csv");

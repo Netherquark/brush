@@ -63,14 +63,34 @@ pub unsafe extern "system" fn Java_com_splats_app_MainActivity_notifyPlatformEve
 
 #[cfg(target_os = "android")]
 fn call_java_static(method: &str) {
-    let vm = rrfd::android::get_jvm().expect("JVM not initialized");
-    let mut env = vm.attach_current_thread().unwrap();
+    let vm = match rrfd::android::get_jvm() {
+        Some(vm) => vm,
+        None => {
+            log::error!("JVM not initialized when calling MainActivity.{method}()");
+            return;
+        }
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(env) => env,
+        Err(err) => {
+            log::error!("Failed to attach JNI thread for MainActivity.{method}(): {err:?}");
+            return;
+        }
+    };
 
     let class_ref = MAIN_ACTIVITY_CLASS.read().unwrap();
-    let class = class_ref.as_ref().expect("MainActivity class not cached");
+    let Some(class) = class_ref.as_ref() else {
+        log::error!("MainActivity class not cached when calling {method}()");
+        return;
+    };
 
-    env.call_static_method(class, method, "()V", &[])
-        .unwrap_or_else(|e| panic!("Failed to call {method}: {e:?}"));
+    if let Err(err) = env.call_static_method(class.as_obj(), method, "()V", &[]) {
+        log::error!("Failed to call MainActivity.{method}(): {err:?}");
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

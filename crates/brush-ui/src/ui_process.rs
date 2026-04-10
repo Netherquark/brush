@@ -326,7 +326,12 @@ impl UiProcess {
 
     pub fn call_platform_action(&self, name: &str) {
         if let Some(callback) = self.read().platform_actions.get(name) {
-            callback();
+            if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
+            {
+                log::error!("Platform action '{name}' panicked: {err:?}");
+            }
+        } else {
+            log::warn!("Platform action '{name}' is not registered");
         }
     }
 

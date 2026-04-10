@@ -74,6 +74,7 @@ public class VideoFrameExtractor {
             try {
                 MediaMetadataRetriever retriever = new MediaMetadataRetriever();
                 retriever.setDataSource(context, videoUri);
+                Log.i(TAG, "Starting frame extraction for " + videoUri);
 
                 String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
                 long durationMs = 0;
@@ -94,17 +95,24 @@ public class VideoFrameExtractor {
                             single.compress(Bitmap.CompressFormat.JPEG, 95, fos);
                         }
                         single.recycle();
+                        Log.i(TAG, "Duration metadata missing; wrote fallback frame to " + f.getAbsolutePath());
                     }
                     retriever.release();
+                    File outDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+                    Log.i(TAG, "Extraction complete: wrote " + countExtractedFrames(outDir)
+                            + " frame(s) to " + (outDir != null ? outDir.getAbsolutePath() : "<null>"));
                     finishExtraction(context, dialogHolder[0], callback, "Extraction complete (1 frame)");
                     return;
                 }
 
                 long durationUs = durationMs * 1000L;
                 long stepUs = durationUs / FRAME_COUNT;
+                Log.i(TAG, "Video durationMs=" + durationMs + ", durationUs=" + durationUs
+                        + ", targetFrames=" + FRAME_COUNT + ", stepUs=" + stepUs);
 
                 File outputDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
                 if (outputDir != null && !outputDir.exists()) outputDir.mkdirs();
+                int writtenFrames = 0;
 
                 for (int i = 0; i < FRAME_COUNT; i++) {
                     long timeUs = i * stepUs;
@@ -143,6 +151,7 @@ public class VideoFrameExtractor {
                         try (FileOutputStream fos = new FileOutputStream(outFile)) {
                             bitmap.compress(Bitmap.CompressFormat.JPEG, 95, fos);
                             fos.flush();
+                            writtenFrames++;
                         } catch (Exception e) {
                             Log.e(TAG, "Failed to write frame file " + outFile, e);
                         } finally {
@@ -158,6 +167,9 @@ public class VideoFrameExtractor {
                 }
 
                 retriever.release();
+                Log.i(TAG, "Extraction finished: wrote " + writtenFrames + "/" + FRAME_COUNT
+                        + " frame(s), filesOnDisk=" + countExtractedFrames(outputDir)
+                        + ", outputDir=" + (outputDir != null ? outputDir.getAbsolutePath() : "<null>"));
                 finishExtraction(context, dialogHolder[0], callback, "Extraction finished");
 
             } catch (Exception e) {
@@ -221,5 +233,11 @@ public class VideoFrameExtractor {
         if (!file.delete()) {
             Log.w(TAG, "Failed to delete stale file: " + file.getAbsolutePath());
         }
+    }
+
+    private static int countExtractedFrames(File dir) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) return 0;
+        File[] files = dir.listFiles((ignored, name) -> name.startsWith("frame_") && name.endsWith(".jpg"));
+        return files != null ? files.length : 0;
     }
 }
