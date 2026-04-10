@@ -126,6 +126,10 @@ pub struct ScenePanel {
     #[serde(skip)]
     selected_csv: Option<String>,
     #[serde(skip)]
+    selected_config: Option<String>,
+    #[serde(skip)]
+    selected_config_path: Option<String>,
+    #[serde(skip)]
     is_extracting: bool,
     #[serde(skip)]
     telemetry_running: bool,
@@ -184,20 +188,44 @@ impl ScenePanel {
 
         // Row 1: Data selection
         ui.horizontal(|ui| {
-            if ui.add_enabled(!is_busy, button("📁 File", blue, !is_busy)).clicked() {
+            if ui
+                .add_enabled(!is_busy, button("📁 File", blue, !is_busy))
+                .clicked()
+            {
                 load_option = Some(DataSource::PickFile);
             }
-            let mp4_label = self.selected_mp4.as_ref()
+            let mp4_label = self
+                .selected_mp4
+                .as_ref()
                 .map(|s| format!("🎬 {}", Self::short_button_name(s, 18)))
                 .unwrap_or_else(|| "🎬 Choose MP4".to_string());
-            if ui.add_enabled(!is_busy, button(&mp4_label, blue, !is_busy)).clicked() {
+            if ui
+                .add_enabled(!is_busy, button(&mp4_label, blue, !is_busy))
+                .clicked()
+            {
                 process.call_platform_action("choose_mp4");
             }
-            let csv_label = self.selected_csv.as_ref()
+            let csv_label = self
+                .selected_csv
+                .as_ref()
                 .map(|s| format!("📄 {}", Self::short_button_name(s, 18)))
                 .unwrap_or_else(|| "📄 Choose CSV".to_string());
-            if ui.add_enabled(!is_busy, button(&csv_label, green, !is_busy)).clicked() {
+            if ui
+                .add_enabled(!is_busy, button(&csv_label, green, !is_busy))
+                .clicked()
+            {
                 process.call_platform_action("choose_csv");
+            }
+            let config_label = self
+                .selected_config
+                .as_ref()
+                .map(|s| format!("⚙ {}", Self::short_button_name(s, 18)))
+                .unwrap_or_else(|| "⚙ Choose Config".to_string());
+            if ui
+                .add_enabled(!is_busy, button(&config_label, purple, !is_busy))
+                .clicked()
+            {
+                process.call_platform_action("choose_config");
             }
         });
 
@@ -205,15 +233,30 @@ impl ScenePanel {
 
         // Row 2: Pipeline execution
         ui.horizontal(|ui| {
-            let extract_label = if self.is_extracting { "🖼 Extracting..." } else { "🖼 Extract" };
-            if ui.add_enabled(!is_busy, button(extract_label, blue, !is_busy)).clicked() {
+            let extract_label = if self.is_extracting {
+                "🖼 Extracting..."
+            } else {
+                "🖼 Extract"
+            };
+            if ui
+                .add_enabled(!is_busy, button(extract_label, blue, !is_busy))
+                .clicked()
+            {
                 process.call_platform_action("extract_frames");
                 self.is_extracting = true;
             }
 
-            let train_label = if self.telemetry_running { "🚂 Training..." } else { "🚂 Train" };
-            let train_enabled = !is_busy && self.selected_mp4.is_some() && self.selected_csv.is_some();
-            if ui.add_enabled(train_enabled, button(train_label, purple, train_enabled)).clicked() {
+            let train_label = if self.telemetry_running {
+                "🚂 Training..."
+            } else {
+                "🚂 Train"
+            };
+            let train_enabled =
+                !is_busy && self.selected_mp4.is_some() && self.selected_csv.is_some();
+            if ui
+                .add_enabled(train_enabled, button(train_label, purple, train_enabled))
+                .clicked()
+            {
                 process.call_platform_action("run_train");
                 self.telemetry_running = true;
             }
@@ -223,10 +266,16 @@ impl ScenePanel {
         if !cfg!(target_os = "android") {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(!is_busy, button("📂 Directory", blue, !is_busy)).clicked() {
+                if ui
+                    .add_enabled(!is_busy, button("📂 Directory", blue, !is_busy))
+                    .clicked()
+                {
                     load_option = Some(DataSource::PickDirectory);
                 }
-                if ui.add_enabled(!is_busy, button("🔗 URL", blue, !is_busy)).clicked() {
+                if ui
+                    .add_enabled(!is_busy, button("🔗 URL", blue, !is_busy))
+                    .clicked()
+                {
                     self.show_url_dialog = true;
                 }
             });
@@ -234,7 +283,6 @@ impl ScenePanel {
 
         load_option
     }
-
 
     fn draw_url_dialog(&mut self, ui: &egui::Ui, is_busy: bool) -> Option<DataSource> {
         let mut load_option = None;
@@ -260,7 +308,10 @@ impl ScenePanel {
 
                         ui.horizontal(|ui| {
                             let is_valid = !self.url.trim().is_empty() && !is_busy;
-                            if ui.add_enabled(is_valid, egui::Button::new("Load")).clicked() {
+                            if ui
+                                .add_enabled(is_valid, egui::Button::new("Load"))
+                                .clicked()
+                            {
                                 load_option = Some(DataSource::Url(self.url.clone()));
                                 self.show_url_dialog = false;
                             }
@@ -286,12 +337,27 @@ impl ScenePanel {
 
     #[allow(clippy::unused_self)]
     fn start_loading(&self, source: DataSource, process: &UiProcess) {
+        let config_path = self.selected_config_path.clone();
         process.connect_to_process(create_process(
             source,
             #[cfg(feature = "training")]
             {
                 let settings = self.settings_popup.clone().unwrap();
-                async move |initial| {
+                async move |mut initial| {
+                    if let Some(path) = config_path {
+                        if let Ok(config_str) = tokio::fs::read_to_string(path).await {
+                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&config_str) {
+                                // Very poor man's merge: just try to deserialize the whole thing if it matches.
+                                // Better: use a proper merge if needed.
+                                // For now, let's assume the user passes a valid (potentially partial) config.
+                                // Actually, if we just want to override, we can try to merge the JSON values.
+                                if let Ok(overridden) = serde_json::from_value(json_val) {
+                                    initial = overridden;
+                                }
+                            }
+                        }
+                    }
+
                     let fut = settings.lock().unwrap().start_pick(initial);
                     fut.await
                 }
@@ -571,13 +637,16 @@ impl ScenePanel {
             match event {
                 crate::ui_process::PlatformEvent::FileSelected {
                     event_type,
-                    path: _,
+                    path,
                     name,
                 } => {
                     if event_type == "mp4_picked" {
                         self.selected_mp4 = Some(name);
                     } else if event_type == "csv_picked" {
                         self.selected_csv = Some(name);
+                    } else if event_type == "config_picked" {
+                        self.selected_config = Some(name);
+                        self.selected_config_path = Some(path);
                     }
                 }
                 crate::ui_process::PlatformEvent::ProcessComplete {
@@ -653,10 +722,7 @@ impl AppPane for ScenePanel {
             .min_size(egui::vec2(50.0, 18.0));
 
             if ui
-                .add_enabled(
-                    !self.is_extracting && !self.telemetry_running,
-                    new_button,
-                )
+                .add_enabled(!self.is_extracting && !self.telemetry_running, new_button)
                 .on_hover_text("Start over with a new file")
                 .clicked()
             {

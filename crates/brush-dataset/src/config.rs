@@ -2,16 +2,16 @@ use brush_render::AlphaMode;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Args, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Debug, Args, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", default)]
 pub struct ModelConfig {
     /// SH degree of splats.
     #[arg(long, help_heading = "Model Options", default_value = "3")]
     pub sh_degree: u32,
 }
 
-#[derive(Clone, Debug, Args, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Debug, Args, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", default)]
 pub struct LoadDataseConfig {
     /// Max nr. of frames of dataset to load
     #[arg(long, help_heading = "Dataset Options")]

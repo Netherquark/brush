@@ -14,7 +14,8 @@ pub struct EssentialMatrixResult {
     pub points_b: Vec<Point2f>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct RansacConfig {
     pub probability: f64,
     pub threshold_px: f64,

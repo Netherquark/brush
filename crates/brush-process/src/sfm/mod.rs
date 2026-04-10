@@ -71,7 +71,9 @@ pub struct Stage36Output {
     pub intrinsics: CameraIntrinsics,
 }
 
-#[derive(Debug, Clone, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenCvFrontendConfig {
     pub matching: MatchConfig,
     pub ransac: RansacConfig,
@@ -135,7 +137,7 @@ pub mod jni_bridge {
     use jni::objects::{JClass, JString};
     use jni::sys::jstring;
     use jni::JNIEnv;
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
 
     use super::*;
     use crate::sfm::stage_3_1_feature_extraction::extract_features;
@@ -235,26 +237,38 @@ pub mod jni_bridge {
             serde_json::from_str(gps_json).unwrap_or_default();
         let imu_priors: Vec<ImuRotationPrior> =
             serde_json::from_str(imu_json).unwrap_or_default();
-        let parsed_config: FrontendJniConfig = if config_json.trim().is_empty() {
-            FrontendJniConfig::default()
+        let (frontend_config, ba_config) = if config_json.trim().is_empty() {
+            (OpenCvFrontendConfig::default(), SlidingWindowConfig::default())
         } else {
-            serde_json::from_str(config_json).unwrap_or_default()
-        };
+            let json_val: serde_json::Value = serde_json::from_str(config_json).unwrap_or(serde_json::Value::Null);
+            
+            // Try to parse frontend config from the root or a "frontend" / "sfm" key
+            let mut fec = serde_json::from_value::<OpenCvFrontendConfig>(json_val.clone()).unwrap_or_default();
+            if let Some(fec_val) = json_val.get("frontend").or(json_val.get("sfm")) {
+                if let Ok(overridden) = serde_json::from_value(fec_val.clone()) {
+                    fec = overridden;
+                }
+            }
 
-        let frontend_config = OpenCvFrontendConfig {
-            matching: MatchConfig {
-                max_hamming_distance: parsed_config.max_hamming_distance.unwrap_or(64.0),
-                max_matches: parsed_config.max_matches.unwrap_or(512),
-            },
-            ransac: RansacConfig {
-                probability: parsed_config.ransac_probability.unwrap_or(0.999),
-                threshold_px: parsed_config.ransac_threshold_px.unwrap_or(1.0),
-                max_iters: parsed_config.ransac_max_iters.unwrap_or(10_000),
-            },
-            inlier_filtering: InlierFilterConfig {
-                min_depth: parsed_config.min_depth.unwrap_or(0.01),
-                max_depth: parsed_config.max_depth.unwrap_or(10_000.0),
-            },
+            // Also support the flat mapping for backwards compatibility during this transition
+            if let Ok(parsed_flat) = serde_json::from_value::<FrontendJniConfig>(json_val.clone()) {
+                if let Some(v) = parsed_flat.max_hamming_distance { fec.matching.max_hamming_distance = v; }
+                if let Some(v) = parsed_flat.max_matches { fec.matching.max_matches = v; }
+                if let Some(v) = parsed_flat.ransac_probability { fec.ransac.probability = v; }
+                if let Some(v) = parsed_flat.ransac_threshold_px { fec.ransac.threshold_px = v; }
+                if let Some(v) = parsed_flat.ransac_max_iters { fec.ransac.max_iters = v; }
+                if let Some(v) = parsed_flat.min_depth { fec.inlier_filtering.min_depth = v; }
+                if let Some(v) = parsed_flat.max_depth { fec.inlier_filtering.max_depth = v; }
+            }
+
+            let mut bac = serde_json::from_value::<SlidingWindowConfig>(json_val.clone()).unwrap_or_default();
+            if let Some(ba_val) = json_val.get("ba").or(json_val.get("bundle-adjustment")) {
+                if let Ok(overridden) = serde_json::from_value(ba_val.clone()) {
+                    bac = overridden;
+                }
+            }
+
+            (fec, bac)
         };
 
         // --- Stage 3.1 - 3.6: OpenCV Sparse Reconstruction (Frontend) ---
@@ -354,7 +368,6 @@ pub mod jni_bridge {
         global_state.gps_priors = gps_priors;
         global_state.imu_priors = imu_priors;
 
-        let ba_config = SlidingWindowConfig::default();
         let ba_result = run_sliding_window_ba(&mut global_state, &intrinsics, &ba_config);
 
         // --- Stage 3.8: Pose Export ---
@@ -376,3 +389,67 @@ pub mod jni_bridge {
         .context("failed to serialise final result")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::jni_bridge::*;
+    use super::*;
+
+    #[test]
+    fn test_config_parsing_full() {
+        let json = serde_json::json!({
+            "max_matches": 100,
+            "ransac_max_iters": 1000,
+            "sfm": {
+                "ransac": { "probability": 0.5 }
+            },
+            "ba": {
+                "window_size": 16
+            }
+        }).to_string();
+
+        let (fec, bac) = run_full_pipeline_from_json_test_helper(&json);
+        
+        // From flat mapping
+        assert_eq!(fec.matching.max_matches, 100);
+        assert_eq!(fec.ransac.max_iters, 1000);
+        
+        // From nested "sfm"
+        assert_eq!(fec.ransac.probability, 0.5);
+        
+        // From nested "ba"
+        assert_eq!(bac.window_size, 16);
+    }
+
+    fn run_full_pipeline_from_json_test_helper(config_json: &str) -> (OpenCvFrontendConfig, SlidingWindowConfig) {
+        // This is a copy of the parsing logic from run_full_pipeline_from_json
+        // to verify it works without actually running the full pipeline.
+        let json_val: serde_json::Value = serde_json::from_str(config_json).unwrap_or(serde_json::Value::Null);
+            
+        let mut fec = serde_json::from_value::<OpenCvFrontendConfig>(json_val.clone()).unwrap_or_default();
+        if let Some(fec_val) = json_val.get("frontend").or(json_val.get("sfm")) {
+            if let Ok(overridden) = serde_json::from_value(fec_val.clone()) {
+                fec = overridden;
+            }
+        }
+
+        if let Ok(parsed_flat) = serde_json::from_value::<jni_bridge::FrontendJniConfig>(json_val.clone()) {
+            if let Some(v) = parsed_flat.max_hamming_distance { fec.matching.max_hamming_distance = v; }
+            if let Some(v) = parsed_flat.max_matches { fec.matching.max_matches = v; }
+            if let Some(v) = parsed_flat.ransac_probability { fec.ransac.probability = v; }
+            if let Some(v) = parsed_flat.ransac_threshold_px { fec.ransac.threshold_px = v; }
+            if let Some(v) = parsed_flat.ransac_max_iters { fec.ransac.max_iters = v; }
+            if let Some(v) = parsed_flat.min_depth { fec.inlier_filtering.min_depth = v; }
+            if let Some(v) = parsed_flat.max_depth { fec.inlier_filtering.max_depth = v; }
+        }
+
+        let mut bac = serde_json::from_value::<SlidingWindowConfig>(json_val.clone()).unwrap_or_default();
+        if let Some(ba_val) = json_val.get("ba").or(json_val.get("bundle-adjustment")) {
+            if let Ok(overridden) = serde_json::from_value(ba_val.clone()) {
+                bac = overridden;
+            }
+        }
+        (fec, bac)
+    }
+}
+

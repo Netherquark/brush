@@ -1,8 +1,8 @@
 use clap::{Args, Parser};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Args, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Args, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", default)]
 pub struct ProcessConfig {
     /// Random seed.
     #[arg(long, help_heading = "Process options", default_value = "42")]
@@ -38,7 +38,7 @@ pub struct ProcessConfig {
 }
 
 #[derive(Parser, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", default)]
 #[cfg(feature = "training")]
 pub struct TrainStreamConfig {
     #[clap(flatten)]

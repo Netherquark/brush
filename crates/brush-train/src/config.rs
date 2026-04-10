@@ -3,7 +3,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Parser, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", default)]
 pub struct TrainConfig {
     /// Total number of steps to train for.
     #[arg(long, help_heading = "Training options", default_value = "30000")]

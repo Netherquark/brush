@@ -25,7 +25,8 @@ public final class TelemetrySparseReconstruction {
             Context context,
             PoseStampSequence sequence,
             File plyFile,
-            File resultFile
+            File resultFile,
+            String configJsonStr
     ) throws Exception {
         if (sequence.getRecords().size() < 2) {
             throw new IllegalStateException("Need at least 2 pose records for sparse reconstruction");
@@ -75,7 +76,7 @@ public final class TelemetrySparseReconstruction {
                 framesJson(frames).toString(),
                 intrinsicsJson(intrinsics).toString(),
                 plyFile.getParent(), // Output directory for transforms.json and sparse.ply
-                "{}",
+                configJsonStr,
                 gps.toString(),
                 imu.toString()
         );

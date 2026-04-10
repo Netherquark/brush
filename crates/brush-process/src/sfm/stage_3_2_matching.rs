@@ -23,7 +23,8 @@ impl FrameFeatures {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct MatchConfig {
     pub max_hamming_distance: f32,
     pub max_matches: usize,

@@ -84,7 +84,10 @@ fn call_java_static(method: &str) {
         return;
     };
 
-    if let Err(err) = env.call_static_method(class.as_obj(), method, "()V", &[]) {
+    let class_obj = env.new_local_ref(class).unwrap();
+    let class: &jni::objects::JClass = (&class_obj).into();
+
+    if let Err(err) = env.call_static_method(class, method, "()V", &[]) {
         log::error!("Failed to call MainActivity.{method}(): {err:?}");
         if env.exception_check().unwrap_or(false) {
             let _ = env.exception_describe();
@@ -139,6 +142,8 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
                             Box::new(|| call_java_static("extractFrames")));
                         ctx.register_platform_action("choose_csv",
                             Box::new(|| call_java_static("chooseCsv")));
+                        ctx.register_platform_action("choose_config",
+                            Box::new(|| call_java_static("chooseConfig")));
                         ctx.register_platform_action("run_train",
                             Box::new(|| call_java_static("runTrain")));
                     }

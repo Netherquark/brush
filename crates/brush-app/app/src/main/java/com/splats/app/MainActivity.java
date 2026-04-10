@@ -99,6 +99,15 @@ public class MainActivity extends GameActivity {
         });
     }
 
+    /** Button 5 – pick a Config JSON */
+    public static void chooseConfig() {
+        if (instance == null) return;
+        instance.runOnUiThread(() -> {
+            Log.i(TAG, "chooseConfig from Rust");
+            FilePicker.startFilePicker(1003); // REQUEST_CODE_PICK_CONFIG
+        });
+    }
+
     /** Unified Train button – runs full SfM pipeline (3.1 - 3.8) */
     public static void runTrain() {
         if (instance == null) return;
@@ -119,6 +128,7 @@ public class MainActivity extends GameActivity {
 
     private File selectedCsvFile = null;
     private File selectedVideoFile = null;
+    private File selectedConfigFile = null;
     private boolean telemetryRunning = false;
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -269,6 +279,25 @@ public class MainActivity extends GameActivity {
             return;
         }
 
+        // ── Config JSON picker (Button 5: Choose Config) ───────────────────────────────
+        if (requestCode == 1003) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                Uri uri = data.getData();
+                if (uri != null) {
+                    selectedConfigFile = ensureLocalFileForUri(uri, "config_", ".json");
+                    if (selectedConfigFile != null) {
+                        Toast.makeText(this, "Config selected: " + selectedConfigFile.getName(),
+                                Toast.LENGTH_SHORT).show();
+                        notifyPlatformEvent("config_picked", selectedConfigFile.getAbsolutePath());
+                    } else {
+                        Toast.makeText(this, "Failed to read Config JSON", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            }
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+
         // ── Regular Rust file picker (Button 1: File .ply viewer) ────────────
         if (requestCode == FilePicker.REQUEST_CODE_PICK_FILE) {
             int fd = -1;
@@ -313,6 +342,18 @@ public class MainActivity extends GameActivity {
         }
 
         cleanupTelemetryOutputs();
+
+        String configJsonStr = "{}";
+        if (selectedConfigFile != null && selectedConfigFile.exists()) {
+            try {
+                java.nio.file.Path p = selectedConfigFile.toPath();
+                configJsonStr = new String(java.nio.file.Files.readAllBytes(p));
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to read config file", e);
+            }
+        }
+        final String finalConfigJsonStr = configJsonStr;
+
         telemetryRunning = true;
         Toast.makeText(this, "Starting telemetry preprocess...", Toast.LENGTH_SHORT).show();
 
@@ -337,7 +378,7 @@ public class MainActivity extends GameActivity {
                                     MainActivity.this,
                                     "Telemetry output directory is unavailable",
                                     Toast.LENGTH_LONG
-                            ).show();
+                             ).show();
                             return;
                         }
                         String sessionBase = stripExtension(sequence.getLogPath().getName());
@@ -346,7 +387,7 @@ public class MainActivity extends GameActivity {
 
                         notifyPlatformEvent("telemetry_complete", plyFile.getAbsolutePath());
 
-                        backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile));
+                        backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile, finalConfigJsonStr));
 
                         Toast.makeText(
                                 MainActivity.this,
@@ -379,9 +420,10 @@ public class MainActivity extends GameActivity {
                         selectedVideoFile,
                         new long[0],
                         callback,
-                        new KeyframeSelectionConfig(),
+                        new KeyframeSelectionConfig(), // parse inside later
                         outDir,
-                        sessionId
+                        sessionId,
+                        finalConfigJsonStr
                 );
         telemetryPreprocessor.start(telemetryScope);
     }
@@ -457,10 +499,10 @@ public class MainActivity extends GameActivity {
         return null;
     }
 
-    private void runSparseExport(PoseStampSequence sequence, File plyFile, File resultFile) {
+    private void runSparseExport(PoseStampSequence sequence, File plyFile, File resultFile, String configJsonStr) {
         try {
             TelemetrySparseReconstruction.Result result =
-                    TelemetrySparseReconstruction.run(this, sequence, plyFile, resultFile);
+                    TelemetrySparseReconstruction.run(this, sequence, plyFile, resultFile, configJsonStr);
             final boolean plyExists = plyFile.exists();
             final String toastMessage = plyExists
                     ? "Sparse PLY written: " + plyFile.getAbsolutePath()
