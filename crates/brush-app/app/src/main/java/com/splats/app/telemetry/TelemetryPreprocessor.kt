@@ -52,10 +52,27 @@ class TelemetryPreprocessor @JvmOverloads constructor(
     private val callback:                TelemetryPreprocessorCallback,
     private val keyframeSelectionConfig: KeyframeSelectionConfig = KeyframeSelectionConfig(),
     private val outputDir:               File = File(System.getProperty("java.io.tmpdir") ?: "/tmp"),
-    private val sessionId:               String = "session_${System.currentTimeMillis()}"
+    private val sessionId:               String = "session_${System.currentTimeMillis()}",
+    val configJsonStr:           String = "{}"
 ) {
     private var job: Job? = null
     private val logTag = "TelemetryPreprocessor"
+    
+    private val activeKeyframeConfig by lazy {
+        try {
+            val json = org.json.JSONObject(configJsonStr)
+            var config = keyframeSelectionConfig
+            if (json.has("distanceThresholdM")) config = config.copy(distanceThresholdM = json.getDouble("distanceThresholdM"))
+            if (json.has("yawThresholdDeg")) config = config.copy(yawThresholdDeg = json.getDouble("yawThresholdDeg"))
+            if (json.has("pitchThresholdDeg")) config = config.copy(pitchThresholdDeg = json.getDouble("pitchThresholdDeg"))
+            if (json.has("timeThresholdUs")) config = config.copy(timeThresholdUs = json.getLong("timeThresholdUs"))
+            if (json.has("minSpeedMs")) config = config.copy(minSpeedMs = json.getDouble("minSpeedMs"))
+            config
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to parse keyframe config from JSON, using defaults", e)
+            keyframeSelectionConfig
+        }
+    }
 
     fun start(scope: CoroutineScope) {
         job = scope.launch(Dispatchers.Default) {
@@ -135,7 +152,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             val kfTimestampsUs: LongArray = if (keyframeTimestampsUs.isNotEmpty()) {
                 keyframeTimestampsUs
             } else {
-                val cands = selectKeyframes(validRows, keyframeSelectionConfig)
+                val cands = selectKeyframes(validRows, activeKeyframeConfig)
                 LongArray(cands.size) { cands[it].timestampUs }
             }
 
@@ -173,6 +190,10 @@ class TelemetryPreprocessor @JvmOverloads constructor(
                 videoPath = videoFile,
                 createdAt = System.currentTimeMillis()
             )
+            // Stash config JSON on PoseStampSequence or just wait - telemetryPreprocessor doesn't pass it directly to TSReconstruction.
+            // Wait, we need it in TSReconstruction!
+            // I'll add configJsonStr into the report or callback!
+            // Wait, PoseStampSequence is what gets passed to TSReconstruction!
             PoseStampEmitter.emit(sequence, outputDir, sessionId)
             reportProgress(ProcessingStage.EMITTING, 1.0f)
 

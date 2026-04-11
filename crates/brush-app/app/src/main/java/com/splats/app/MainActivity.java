@@ -102,6 +102,15 @@ public class MainActivity extends GameActivity {
         });
     }
 
+    /** Button 5 – pick a Config JSON */
+    public static void chooseConfig() {
+        if (instance == null) return;
+        instance.runOnUiThread(() -> {
+            Log.i(TAG, "chooseConfig from Rust");
+            FilePicker.startFilePicker(1003); // REQUEST_CODE_PICK_CONFIG
+        });
+    }
+
     /** Unified Train button – runs full SfM pipeline (3.1 - 3.8) */
     public static void runTrain(String configJson) {
         if (instance == null) return;
@@ -123,6 +132,7 @@ public class MainActivity extends GameActivity {
 
     private File selectedCsvFile = null;
     private File selectedVideoFile = null;
+    private File selectedConfigFile = null;
     private boolean telemetryRunning = false;
     /** Native SfM / OpenCV frontend JSON (orb, BA window, LM iterations). */
     private String nativeSfmConfigJson = "{}";
@@ -289,6 +299,18 @@ public class MainActivity extends GameActivity {
         }
 
         cleanupTelemetryOutputs();
+
+        String configJsonStr = "{}";
+        if (selectedConfigFile != null && selectedConfigFile.exists()) {
+            try {
+                java.nio.file.Path p = selectedConfigFile.toPath();
+                configJsonStr = new String(java.nio.file.Files.readAllBytes(p));
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to read config file", e);
+            }
+        }
+        final String finalConfigJsonStr = configJsonStr;
+
         telemetryRunning = true;
         Toast.makeText(this, "Starting telemetry preprocess...", Toast.LENGTH_SHORT).show();
 
@@ -323,7 +345,7 @@ public class MainActivity extends GameActivity {
 
                         notifyPlatformEvent("telemetry_complete", plyFile.getAbsolutePath());
 
-                        backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile));
+                        backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile, finalConfigJsonStr));
 
                         Toast.makeText(
                                 MainActivity.this,
@@ -358,7 +380,8 @@ public class MainActivity extends GameActivity {
                         callback,
                         keyframeSelectionConfig,
                         outDir,
-                        sessionId
+                        sessionId,
+                        finalConfigJsonStr
                 );
         telemetryPreprocessor.start(telemetryScope);
     }
@@ -490,7 +513,7 @@ public class MainActivity extends GameActivity {
         return null;
     }
 
-    private void runSparseExport(PoseStampSequence sequence, File plyFile, File resultFile) {
+    private void runSparseExport(PoseStampSequence sequence, File plyFile, File resultFile, String configJsonStr) {
         try {
             TelemetrySparseReconstruction.Result result =
                     TelemetrySparseReconstruction.run(this, sequence, plyFile, resultFile, nativeSfmConfigJson);

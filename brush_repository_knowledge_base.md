@@ -8,6 +8,7 @@ The repository is a hybrid workspace bridging an Android application and a highl
 - **Telemetry Bridge**: Native Android Java (`TelemetrySparseReconstruction.java`) which prepares video and sensor telemetry mapping for the native pipeline.
 - **Inter-Process Communication (IPC)**: A structured JNI bridge routing asynchronous string/JSON messages and callback hooks between Rust's tokio runtime and Android's JVM.
 - **Unified Computational Engine**: A single, end-to-end Rust pipeline (`brush-process`) that orchestrates feature extraction, pose recovery, triangulation, and bundle adjustment using OpenCV, graduating to Gaussian Splatting training.
+- **Dynamic Configuration**: Hyperparameters for SfM and Bundle Adjustment are passed as JSON from the Android GUI to the Rust native layer, enabling real-time experimentation without recompilation.
 
 ---
 
@@ -43,6 +44,7 @@ The repository is a hybrid workspace bridging an Android application and a highl
   3. **3.5 - 3.6**: Triangulation and Reprojection Inlier Filtering.
   4. **3.7**: Bundle Adjustment (via `brush-sfm`) for global consistency.
   5. **3.8**: **Pose Export**: Generates Nerfstudio-compatible `transforms.json` and `sparse.ply`.
+- **Coordinate Space Normalization**: Stage 3.8 implements a critical conversion from OpenCV's right-handed coordinate system (x-right, y-down, z-forward) to the NeRF-standard system (x-right, y-up, z-back) to ensure compatibility with Gaussian Splatting kernels.
 
 ---
 
@@ -52,9 +54,10 @@ The repository is a hybrid workspace bridging an Android application and a highl
 - **Dynamic Libraries**: Modular OpenCV 4.13.0 and TBB `.so` files are bundled in `jniLibs/arm64-v8a/`.
 - **Optimization**: The core pipeline uses native OpenCV modules (`features2d`, `calib3d`) compiled specifically for Android `arm64-v8a` with NEON acceleration.
 
-**The Unified SfM Pipeline (Completed):**
-- **Stages 3.1 - 3.8**: The full pipeline from image extraction to final export is now implemented and verified.
-- **Pose Export**: The system successfully exports a visualizable sparse mesh (`sparse.ply`) and the necessary transformation data for the Gaussian Splatting stage.
+**The Unified SfM Pipeline (Completed & Integrated):**
+- **Stages 3.1 - 3.8**: The full pipeline from image extraction to final export is now implemented, integrated via JNI, and verified.
+- **Dynamic Tuning**: The system now supports runtime overrides for matching (Hamming distance, max matches), RANSAC (threshold, probability), and depth filtering parameters.
+- **Pose Export**: The system successfully exports a visualizable sparse mesh (`sparse.ply`) and optimized transformation data (`transforms.json`) with correct axis alignment for training.
 
 **UI Consolidation:**
 - The previous grid of "Coming Soon" buttons has been replaced by a single, prominent **Train** button in both the Rust UI and Android Java frontend. 
@@ -78,5 +81,6 @@ The repository is a hybrid workspace bridging an Android application and a highl
 ---
 
 ## 5. Known Integration Points
-- **SfM to Training**: The output of Stage 3.8 (`transforms.json`) is the direct input for the `brush-train` Gaussian Splatting core.
+- **SfM to Training**: The output of Stage 3.8 (`transforms.json`) is the direct input for the `brush-train` Gaussian Splatting core, featuring NeRF-compatible axis alignment.
 - **Telemetry Reliability**: Relies on accurate Enu position mappings from the Drone CSVs to seed the global SfM coordinate system.
+- **JSON Configuration Interface**: The JNI bridge implements a tiered parsing logic that handles both flat configuration payloads (for the mobile UI) and nested structures for advanced pipeline control.

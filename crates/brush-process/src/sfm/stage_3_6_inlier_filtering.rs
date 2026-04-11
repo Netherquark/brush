@@ -9,7 +9,8 @@ use crate::{
     CameraIntrinsics, GpsPrior, ImuRotationPrior, Observation,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct InlierFilterConfig {
     pub min_depth: f64,
     pub max_depth: f64,
