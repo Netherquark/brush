@@ -72,6 +72,7 @@ public class MainActivity extends GameActivity {
     // ── Request codes ─────────────────────────────────────────────────────────
     private static final int REQUEST_CODE_CHOOSE_MP4         = 1000;
     private static final int REQUEST_CODE_PICK_CSV           = 1002;
+    private static final int REQUEST_CODE_PICK_CONFIG        = 1003;
 
     // ── JNI-callable static methods (called from Rust via platform callbacks) ─
 
@@ -107,7 +108,7 @@ public class MainActivity extends GameActivity {
         if (instance == null) return;
         instance.runOnUiThread(() -> {
             Log.i(TAG, "chooseConfig from Rust");
-            FilePicker.startFilePicker(1003); // REQUEST_CODE_PICK_CONFIG
+            FilePicker.startFilePicker(REQUEST_CODE_PICK_CONFIG);
         });
     }
 
@@ -195,6 +196,33 @@ public class MainActivity extends GameActivity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+
+        // ── Config JSON picker (Choose Config) ─────────────────────────────
+        if (requestCode == REQUEST_CODE_PICK_CONFIG) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                Uri uri = data.getData();
+                if (uri != null) {
+                    try {
+                        int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                        if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0)
+                            takeFlags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+                        getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                    } catch (Exception e) {
+                        Log.i(TAG, "Could not take persistable permission: " + e);
+                    }
+                    selectedConfigFile = ensureLocalFileForUri(uri, "telemetry_config_", ".json");
+                    if (selectedConfigFile != null) {
+                        Toast.makeText(this, "Config: " + selectedConfigFile.getName(),
+                                Toast.LENGTH_SHORT).show();
+                        notifyPlatformEvent("config_picked", selectedConfigFile.getAbsolutePath());
+                    } else {
+                        Toast.makeText(this, "Failed to read config file", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            }
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
 
         // ── CSV picker (Button 4: Choose CSV) ───────────────────────────────
         if (requestCode == REQUEST_CODE_PICK_CSV) {

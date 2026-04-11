@@ -134,8 +134,12 @@ public class VideoFrameExtractor {
                             timeUs = Math.min(timeUs, durationUs - 1);
                         }
                     } else {
-                        long stepUs = durationUs / totalSteps;
-                        timeUs = i * stepUs;
+                        // Evenly space samples across [0, duration]: first frame at start, last near end.
+                        if (totalSteps <= 1) {
+                            timeUs = 0;
+                        } else {
+                            timeUs = (durationUs * (long) i) / (long) (totalSteps - 1);
+                        }
                     }
 
                     Bitmap bitmap = null;

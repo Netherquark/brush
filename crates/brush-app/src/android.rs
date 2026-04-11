@@ -201,6 +201,8 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
                         }));
                         ctx.register_platform_action("choose_csv",
                             Box::new(|| call_java_static("chooseCsv")));
+                        ctx.register_platform_action("choose_config",
+                            Box::new(|| call_java_static("chooseConfig")));
                         let proc_train = ctx.clone();
                         ctx.register_platform_action("run_train", Box::new(move || {
                             let json = proc_train

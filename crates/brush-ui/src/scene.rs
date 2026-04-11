@@ -158,6 +158,25 @@ pub struct ScenePanel {
     #[cfg(target_os = "android")]
     #[serde(skip)]
     android_train_max_splats: u32,
+    /// Seeded once so user can set keyframe thresholds to 0 if desired.
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_kf_defaults_seeded: bool,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_kf_distance_m: f64,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_kf_yaw_deg: f64,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_kf_pitch_deg: f64,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_kf_time_s: f64,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_kf_min_speed_ms: f64,
 }
 
 #[cfg(target_os = "android")]
@@ -202,6 +221,14 @@ impl ScenePanel {
         if self.android_train_max_splats == 0 {
             self.android_train_max_splats = 100_000;
         }
+        if !self.android_kf_defaults_seeded {
+            self.android_kf_distance_m = 2.0;
+            self.android_kf_yaw_deg = 8.0;
+            self.android_kf_pitch_deg = 5.0;
+            self.android_kf_time_s = 1.0;
+            self.android_kf_min_speed_ms = 0.2;
+            self.android_kf_defaults_seeded = true;
+        }
     }
 
     #[cfg(target_os = "android")]
@@ -219,11 +246,11 @@ impl ScenePanel {
             lm_max_iterations: self.android_lm_iterations.max(1).min(2000),
             train_total_steps: self.android_train_steps.max(1).min(2000),
             train_max_splats: self.android_train_max_splats.max(1000).min(100_000),
-            kf_distance_m: 2.0,
-            kf_yaw_deg: 8.0,
-            kf_pitch_deg: 5.0,
-            kf_time_s: 1.0,
-            kf_min_speed_ms: 0.2,
+            kf_distance_m: self.android_kf_distance_m.clamp(0.05, 100.0),
+            kf_yaw_deg: self.android_kf_yaw_deg.clamp(0.0, 180.0),
+            kf_pitch_deg: self.android_kf_pitch_deg.clamp(0.0, 180.0),
+            kf_time_s: self.android_kf_time_s.clamp(0.05, 60.0),
+            kf_min_speed_ms: self.android_kf_min_speed_ms.clamp(0.0, 10.0),
         };
         serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string())
     }
@@ -372,6 +399,37 @@ impl ScenePanel {
             ui.add(
                 Slider::new(&mut self.android_train_max_splats, 1000..=100_000)
                     .text("Splat cap (after SfM)"),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Telemetry keyframes (Train + telemetry Extract)")
+                    .size(11.0)
+                    .color(Color32::from_rgb(160, 160, 170)),
+            );
+            ui.add(
+                Slider::new(&mut self.android_kf_distance_m, 0.25..=30.0)
+                    .text("KF distance (m)")
+                    .custom_formatter(|n, _| format!("{n:.2} m")),
+            );
+            ui.add(
+                Slider::new(&mut self.android_kf_yaw_deg, 0.5..=45.0)
+                    .text("KF yaw (°)")
+                    .custom_formatter(|n, _| format!("{n:.1}°")),
+            );
+            ui.add(
+                Slider::new(&mut self.android_kf_pitch_deg, 0.5..=30.0)
+                    .text("KF pitch (°)")
+                    .custom_formatter(|n, _| format!("{n:.1}°")),
+            );
+            ui.add(
+                Slider::new(&mut self.android_kf_time_s, 0.1..=15.0)
+                    .text("KF time gap (s)")
+                    .custom_formatter(|n, _| format!("{n:.2} s")),
+            );
+            ui.add(
+                Slider::new(&mut self.android_kf_min_speed_ms, 0.0..=2.0)
+                    .text("Min speed (m/s, hover gate)")
+                    .custom_formatter(|n, _| format!("{n:.2}")),
             );
             ui.add_space(6.0);
         }

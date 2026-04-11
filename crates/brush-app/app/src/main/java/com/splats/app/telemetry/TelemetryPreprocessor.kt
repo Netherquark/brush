@@ -67,6 +67,15 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             if (json.has("pitchThresholdDeg")) config = config.copy(pitchThresholdDeg = json.getDouble("pitchThresholdDeg"))
             if (json.has("timeThresholdUs")) config = config.copy(timeThresholdUs = json.getLong("timeThresholdUs"))
             if (json.has("minSpeedMs")) config = config.copy(minSpeedMs = json.getDouble("minSpeedMs"))
+            // Same fields as Rust `AndroidPipelineConfig` / Java `PipelineConfig` (kf_*).
+            if (json.has("kf_distance_m")) config = config.copy(distanceThresholdM = json.getDouble("kf_distance_m"))
+            if (json.has("kf_yaw_deg")) config = config.copy(yawThresholdDeg = json.getDouble("kf_yaw_deg"))
+            if (json.has("kf_pitch_deg")) config = config.copy(pitchThresholdDeg = json.getDouble("kf_pitch_deg"))
+            if (json.has("kf_time_s")) {
+                val sec = json.getDouble("kf_time_s")
+                config = config.copy(timeThresholdUs = kotlin.math.round(sec * 1_000_000.0).toLong())
+            }
+            if (json.has("kf_min_speed_ms")) config = config.copy(minSpeedMs = json.getDouble("kf_min_speed_ms"))
             config
         } catch (e: Exception) {
             Log.e(logTag, "Failed to parse keyframe config from JSON, using defaults", e)
