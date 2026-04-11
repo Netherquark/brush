@@ -133,9 +133,101 @@ pub struct ScenePanel {
     is_extracting: bool,
     #[serde(skip)]
     telemetry_running: bool,
+    /// Android: `true` = uniform time sampling, `false` = CSV telemetry keyframes (distance/yaw/pitch/time).
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_extraction_uniform: bool,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_max_frame_dimension: u32,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_frame_count: u32,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_orb_keypoints: u32,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_ba_window: u32,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_lm_iterations: u32,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_train_steps: u32,
+    #[cfg(target_os = "android")]
+    #[serde(skip)]
+    android_train_max_splats: u32,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Serialize)]
+struct AndroidPipelineConfig {
+    extraction_mode: String,
+    max_frame_dimension: u32,
+    frame_count: u32,
+    orb_keypoints: u32,
+    ba_window_size: u32,
+    lm_max_iterations: u32,
+    train_total_steps: u32,
+    train_max_splats: u32,
+    kf_distance_m: f64,
+    kf_yaw_deg: f64,
+    kf_pitch_deg: f64,
+    kf_time_s: f64,
+    kf_min_speed_ms: f64,
 }
 
 impl ScenePanel {
+    #[cfg(target_os = "android")]
+    fn ensure_android_pipeline_defaults(&mut self) {
+        if self.android_max_frame_dimension == 0 {
+            self.android_max_frame_dimension = 360;
+        }
+        if self.android_frame_count == 0 {
+            self.android_frame_count = 50;
+        }
+        if self.android_orb_keypoints == 0 {
+            self.android_orb_keypoints = 512;
+        }
+        if self.android_ba_window == 0 {
+            self.android_ba_window = 5;
+        }
+        if self.android_lm_iterations == 0 {
+            self.android_lm_iterations = 50;
+        }
+        if self.android_train_steps == 0 {
+            self.android_train_steps = 2000;
+        }
+        if self.android_train_max_splats == 0 {
+            self.android_train_max_splats = 100_000;
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn android_pipeline_config_json(&self) -> String {
+        let cfg = AndroidPipelineConfig {
+            extraction_mode: if self.android_extraction_uniform {
+                "uniform".to_string()
+            } else {
+                "telemetry".to_string()
+            },
+            max_frame_dimension: self.android_max_frame_dimension.max(144).min(720),
+            frame_count: self.android_frame_count.max(1).min(100),
+            orb_keypoints: self.android_orb_keypoints.max(50).min(1000),
+            ba_window_size: self.android_ba_window.max(2).min(5),
+            lm_max_iterations: self.android_lm_iterations.max(1).min(2000),
+            train_total_steps: self.android_train_steps.max(1).min(2000),
+            train_max_splats: self.android_train_max_splats.max(1000).min(100_000),
+            kf_distance_m: 2.0,
+            kf_yaw_deg: 8.0,
+            kf_pitch_deg: 5.0,
+            kf_time_s: 1.0,
+            kf_min_speed_ms: 0.2,
+        };
+        serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string())
+    }
+
     fn short_button_name(name: &str, max_chars: usize) -> String {
         let char_count = name.chars().count();
         if char_count <= max_chars {
@@ -231,32 +323,85 @@ impl ScenePanel {
 
         ui.add_space(4.0);
 
+        #[cfg(target_os = "android")]
+        {
+            self.ensure_android_pipeline_defaults();
+            ui.label(
+                RichText::new("Keyframe extraction")
+                    .size(11.0)
+                    .color(Color32::from_rgb(160, 160, 170)),
+            );
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if ui
+                    .selectable_label(self.android_extraction_uniform, "Uniform")
+                    .clicked()
+                {
+                    self.android_extraction_uniform = true;
+                }
+                if ui
+                    .selectable_label(!self.android_extraction_uniform, "Telemetry")
+                    .clicked()
+                {
+                    self.android_extraction_uniform = false;
+                }
+            });
+            ui.add_space(2.0);
+            egui::ComboBox::from_id_salt("android_decode_h")
+                .width(120.0)
+                .selected_text(format!("Decode max {}px", self.android_max_frame_dimension))
+                .show_ui(ui, |ui| {
+                    for h in [144u32, 240, 360, 480, 720] {
+                        ui.selectable_value(&mut self.android_max_frame_dimension, h, format!("{h}px"));
+                    }
+                });
+            ui.add_space(4.0);
+            ui.add(
+                Slider::new(&mut self.android_frame_count, 1..=100).text("Frame count"),
+            );
+            ui.add(
+                Slider::new(&mut self.android_orb_keypoints, 50..=1000).text("ORB keypoints"),
+            );
+            ui.add(Slider::new(&mut self.android_ba_window, 2..=5).text("BA window"));
+            ui.add(
+                Slider::new(&mut self.android_lm_iterations, 1..=2000).text("BA LM iterations"),
+            );
+            ui.add(
+                Slider::new(&mut self.android_train_steps, 1..=2000).text("Train steps (after SfM)"),
+            );
+            ui.add(
+                Slider::new(&mut self.android_train_max_splats, 1000..=100_000)
+                    .text("Splat cap (after SfM)"),
+            );
+            ui.add_space(6.0);
+        }
+
         // Row 2: Pipeline execution
         ui.horizontal(|ui| {
-            let extract_label = if self.is_extracting {
-                "🖼 Extracting..."
-            } else {
-                "🖼 Extract"
-            };
-            if ui
-                .add_enabled(!is_busy, button(extract_label, blue, !is_busy))
-                .clicked()
-            {
+            let extract_label = if self.is_extracting { "🖼 Extracting..." } else { "🖼 Extract" };
+            if ui.add(button(extract_label, blue)).clicked() {
+                #[cfg(target_os = "android")]
+                {
+                    self.ensure_android_pipeline_defaults();
+                    let json = self.android_pipeline_config_json();
+                    process.set_platform_action_payload(Some(json));
+                }
+                #[cfg(not(target_os = "android"))]
+                process.set_platform_action_payload(None);
                 process.call_platform_action("extract_frames");
                 self.is_extracting = true;
             }
 
-            let train_label = if self.telemetry_running {
-                "🚂 Training..."
-            } else {
-                "🚂 Train"
-            };
-            let train_enabled =
-                !is_busy && self.selected_mp4.is_some() && self.selected_csv.is_some();
-            if ui
-                .add_enabled(train_enabled, button(train_label, purple, train_enabled))
-                .clicked()
-            {
+            let train_label = if self.telemetry_running { "🚂 Training..." } else { "🚂 Train" };
+            if ui.add(button(train_label, purple)).clicked() {
+                #[cfg(target_os = "android")]
+                {
+                    self.ensure_android_pipeline_defaults();
+                    let json = self.android_pipeline_config_json();
+                    process.set_platform_action_payload(Some(json));
+                }
+                #[cfg(not(target_os = "android"))]
+                process.set_platform_action_payload(None);
                 process.call_platform_action("run_train");
                 self.telemetry_running = true;
             }
@@ -660,10 +805,21 @@ impl ScenePanel {
                         }
                         "telemetry_complete" | "telemetry_failed" => {
                             self.telemetry_running = false;
-                            if event_type.as_str() == "telemetry_complete" {
-                                // Automatically load the resulting PLY
-                                self.start_loading(DataSource::Path(data), process);
+                            #[cfg(all(feature = "training", target_os = "android"))]
+                            {
+                                self.ensure_android_pipeline_defaults();
+                                if let Some(popup) = &self.settings_popup {
+                                    if let Ok(mut p) = popup.lock() {
+                                        p.args.train_config.total_steps = self.android_train_steps;
+                                        p.args.train_config.max_splats = self.android_train_max_splats;
+                                    }
+                                }
                             }
+                            // Automatically load the resulting PLY
+                            self.start_loading(DataSource::Path(data), process);
+                        }
+                        "train_not_ready" => {
+                            self.telemetry_running = false;
                         }
                         _ => {}
                     }

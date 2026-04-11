@@ -335,6 +335,15 @@ impl UiProcess {
         }
     }
 
+    /// JSON payload consumed by the next Android JNI call (`extract_frames` / `run_train`).
+    pub fn set_platform_action_payload(&self, payload: Option<String>) {
+        self.write().platform_action_payload = payload;
+    }
+
+    pub fn take_platform_action_payload(&self) -> Option<String> {
+        self.write().platform_action_payload.take()
+    }
+
     pub fn dispatch_platform_event(&self, event: PlatformEvent) {
         let _ = self.read().platform_events.0.send(event);
     }
@@ -366,6 +375,8 @@ struct UiProcessInner {
     ui_ctx: egui::Context,
     burn_device: WgpuDevice,
     platform_actions: HashMap<String, PlatformCallback>,
+    /// Optional JSON consumed by Android `extract_frames` / `run_train`.
+    platform_action_payload: Option<String>,
 }
 
 impl UiProcessInner {
@@ -393,6 +404,7 @@ impl UiProcessInner {
             burn_device,
             ui_ctx,
             platform_actions: HashMap::new(),
+            platform_action_payload: None,
         }
     }
 

@@ -167,6 +167,12 @@ pub mod jni_bridge {
         min_depth: Option<f64>,
         #[serde(default)]
         max_depth: Option<f64>,
+        #[serde(default)]
+        orb_n_features: Option<i32>,
+        #[serde(default)]
+        ba_window_size: Option<usize>,
+        #[serde(default)]
+        lm_max_iterations: Option<u32>,
     }
 
 
@@ -250,25 +256,29 @@ pub mod jni_bridge {
                 }
             }
 
-            // Also support the flat mapping for backwards compatibility during this transition
-            if let Ok(parsed_flat) = serde_json::from_value::<FrontendJniConfig>(json_val.clone()) {
-                if let Some(v) = parsed_flat.max_hamming_distance { fec.matching.max_hamming_distance = v; }
-                if let Some(v) = parsed_flat.max_matches { fec.matching.max_matches = v; }
-                if let Some(v) = parsed_flat.ransac_probability { fec.ransac.probability = v; }
-                if let Some(v) = parsed_flat.ransac_threshold_px { fec.ransac.threshold_px = v; }
-                if let Some(v) = parsed_flat.ransac_max_iters { fec.ransac.max_iters = v; }
-                if let Some(v) = parsed_flat.min_depth { fec.inlier_filtering.min_depth = v; }
-                if let Some(v) = parsed_flat.max_depth { fec.inlier_filtering.max_depth = v; }
-            }
+        let n_orb_features = parsed_config
+            .orb_n_features
+            .unwrap_or(500)
+            .clamp(50, 10_000);
 
-            let mut bac = serde_json::from_value::<SlidingWindowConfig>(json_val.clone()).unwrap_or_default();
-            if let Some(ba_val) = json_val.get("ba").or(json_val.get("bundle-adjustment")) {
-                if let Ok(overridden) = serde_json::from_value(ba_val.clone()) {
-                    bac = overridden;
-                }
-            }
-
-            (fec, bac)
+        let frontend_config = OpenCvFrontendConfig {
+            matching: MatchConfig {
+                max_hamming_distance: parsed_config.max_hamming_distance.unwrap_or(64.0),
+                max_matches: parsed_config
+                    .max_matches
+                    .unwrap_or(512)
+                    .max(8)
+                    .min(10_000),
+            },
+            ransac: RansacConfig {
+                probability: parsed_config.ransac_probability.unwrap_or(0.999),
+                threshold_px: parsed_config.ransac_threshold_px.unwrap_or(1.0),
+                max_iters: parsed_config.ransac_max_iters.unwrap_or(10_000),
+            },
+            inlier_filtering: InlierFilterConfig {
+                min_depth: parsed_config.min_depth.unwrap_or(0.01),
+                max_depth: parsed_config.max_depth.unwrap_or(10_000.0),
+            },
         };
 
         // --- Stage 3.1 - 3.6: OpenCV Sparse Reconstruction (Frontend) ---
@@ -288,7 +298,7 @@ pub mod jni_bridge {
             frame_paths.push(frame.image_path.clone());
             let image_bytes = fs::read(&frame.image_path)
                 .with_context(|| format!("failed to read frame {}", frame.image_path))?;
-            let extraction = extract_features(&image_bytes).map_err(|error| {
+            let extraction = extract_features(&image_bytes, n_orb_features).map_err(|error| {
                 anyhow::anyhow!("feature extraction failed for {}: {error}", frame.image_path)
             })?;
             let current_features = FrameFeatures::from_extraction(frame.frame_idx, extraction);
@@ -368,6 +378,14 @@ pub mod jni_bridge {
         global_state.gps_priors = gps_priors;
         global_state.imu_priors = imu_priors;
 
+        let mut ba_config = SlidingWindowConfig::default();
+        if let Some(ws) = parsed_config.ba_window_size {
+            let cap = frames_input.len().max(2);
+            ba_config.window_size = ws.max(2).min(cap);
+        }
+        if let Some(it) = parsed_config.lm_max_iterations {
+            ba_config.lm.max_iterations = it.max(1).min(2000);
+        }
         let ba_result = run_sliding_window_ba(&mut global_state, &intrinsics, &ba_config);
 
         // --- Stage 3.8: Pose Export ---

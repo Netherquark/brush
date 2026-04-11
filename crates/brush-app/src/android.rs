@@ -96,6 +96,51 @@ fn call_java_static(method: &str) {
     }
 }
 
+#[cfg(target_os = "android")]
+fn call_java_static_string(method: &str, arg: &str) {
+    let vm = match rrfd::android::get_jvm() {
+        Some(vm) => vm,
+        None => {
+            log::error!("JVM not initialized when calling MainActivity.{method}(String)");
+            return;
+        }
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(env) => env,
+        Err(err) => {
+            log::error!("Failed to attach JNI thread for MainActivity.{method}(String): {err:?}");
+            return;
+        }
+    };
+
+    let class_ref = MAIN_ACTIVITY_CLASS.read().unwrap();
+    let Some(class) = class_ref.as_ref() else {
+        log::error!("MainActivity class not cached when calling {method}(String)");
+        return;
+    };
+
+    let jstr = match env.new_string(arg) {
+        Ok(s) => s,
+        Err(err) => {
+            log::error!("Failed to allocate jstring for MainActivity.{method}: {err:?}");
+            return;
+        }
+    };
+
+    if let Err(err) = env.call_static_method(
+        class.as_obj(),
+        method,
+        "(Ljava/lang/String;)V",
+        &[jni::objects::JValue::Object(&jstr)],
+    ) {
+        log::error!("Failed to call MainActivity.{method}(String): {err:?}");
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 fn android_main(app: winit::platform::android::activity::AndroidApp) {
     let wgpu_options = brush_ui::create_egui_options();
@@ -129,23 +174,31 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
                         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
                         *PLATFORM_EVENT_SENDER.write().unwrap() = Some(sender);
 
-                        let ctx_clone = ctx.clone();
-                        tokio::spawn(async move {
-                            while let Some(event) = receiver.recv().await {
-                                ctx_clone.dispatch_platform_event(event);
-                            }
-                        });
+                    let ctx_clone = ctx.clone();
+                    tokio::spawn(async move {
+                        while let Some(event) = receiver.recv().await {
+                            ctx_clone.dispatch_platform_event(event);
+                        }
+                    });
 
+                        let proc_extract = ctx.clone();
                         ctx.register_platform_action("choose_mp4",
                             Box::new(|| call_java_static("chooseMp4")));
-                        ctx.register_platform_action("extract_frames",
-                            Box::new(|| call_java_static("extractFrames")));
+                        ctx.register_platform_action("extract_frames", Box::new(move || {
+                            let json = proc_extract
+                                .take_platform_action_payload()
+                                .unwrap_or_else(|| "{}".to_string());
+                            call_java_static_string("extractFrames", &json);
+                        }));
                         ctx.register_platform_action("choose_csv",
                             Box::new(|| call_java_static("chooseCsv")));
-                        ctx.register_platform_action("choose_config",
-                            Box::new(|| call_java_static("chooseConfig")));
-                        ctx.register_platform_action("run_train",
-                            Box::new(|| call_java_static("runTrain")));
+                        let proc_train = ctx.clone();
+                        ctx.register_platform_action("run_train", Box::new(move || {
+                            let json = proc_train
+                                .take_platform_action_payload()
+                                .unwrap_or_else(|| "{}".to_string());
+                            call_java_static_string("runTrain", &json);
+                        }));
                     }
 
                     Ok(Box::new(app))
