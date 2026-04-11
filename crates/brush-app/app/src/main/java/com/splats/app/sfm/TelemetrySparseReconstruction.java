@@ -25,7 +25,8 @@ public final class TelemetrySparseReconstruction {
             Context context,
             PoseStampSequence sequence,
             File plyFile,
-            File resultFile
+            File resultFile,
+            String nativeConfigJson
     ) throws Exception {
         if (sequence.getRecords().size() < 2) {
             throw new IllegalStateException("Need at least 2 pose records for sparse reconstruction");
@@ -71,11 +72,12 @@ public final class TelemetrySparseReconstruction {
             imu.put(imuJson(i, frames.get(i), i + 1, frames.get(i + 1)));
         }
 
+        String cfg = (nativeConfigJson != null && !nativeConfigJson.isEmpty()) ? nativeConfigJson : "{}";
         String resultJson = OpenCvFrontendLib.runFullPipelineSync(
                 framesJson(frames).toString(),
                 intrinsicsJson(intrinsics).toString(),
                 plyFile.getParent(), // Output directory for transforms.json and sparse.ply
-                "{}",
+                cfg,
                 gps.toString(),
                 imu.toString()
         );

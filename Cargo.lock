@@ -1330,6 +1330,7 @@ dependencies = [
  "rand 0.9.2",
  "rrfd",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tokio_with_wasm",

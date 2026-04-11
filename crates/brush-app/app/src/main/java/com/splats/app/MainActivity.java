@@ -36,6 +36,9 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import kotlinx.coroutines.CoroutineScope;
 
 import com.splats.app.sfm.TelemetrySparseReconstruction;
@@ -45,6 +48,7 @@ import com.splats.app.telemetry.TelemetryPreprocessorCallback;
 import com.splats.app.telemetry.ProcessingStage;
 import com.splats.app.telemetry.PoseStampSequence;
 import com.splats.app.telemetry.TelemetryProcessingReport;
+import com.splats.app.telemetry.KeyframePlanner;
 import com.splats.app.telemetry.KeyframeSelectionConfig;
 
 public class MainActivity extends GameActivity {
@@ -67,7 +71,6 @@ public class MainActivity extends GameActivity {
 
     // ── Request codes ─────────────────────────────────────────────────────────
     private static final int REQUEST_CODE_CHOOSE_MP4         = 1000;
-    private static final int REQUEST_CODE_EXTRACT_FRAMES     = 1001;
     private static final int REQUEST_CODE_PICK_CSV           = 1002;
 
     // ── JNI-callable static methods (called from Rust via platform callbacks) ─
@@ -81,12 +84,12 @@ public class MainActivity extends GameActivity {
         });
     }
 
-    /** Button 3 – pick an MP4 AND immediately extract frames */
-    public static void extractFrames() {
+    /** Button 3 – extract frames from the already-selected MP4 (see {@link #chooseMp4()}). */
+    public static void extractFrames(String configJson) {
         if (instance == null) return;
         instance.runOnUiThread(() -> {
             Log.i(TAG, "extractFrames from Rust");
-            FilePicker.startFilePicker(REQUEST_CODE_EXTRACT_FRAMES);
+            instance.extractFramesFromSelectedVideo(configJson != null ? configJson : "{}");
         });
     }
 
@@ -100,16 +103,17 @@ public class MainActivity extends GameActivity {
     }
 
     /** Unified Train button – runs full SfM pipeline (3.1 - 3.8) */
-    public static void runTrain() {
+    public static void runTrain(String configJson) {
         if (instance == null) return;
         instance.runOnUiThread(() -> {
             Log.i(TAG, "runTrain from Rust");
+            instance.applyPipelineConfigJson(configJson != null ? configJson : "{}");
             instance.startTelemetryPreprocessIfReady();
         });
     }
 
     public static void runTelemetry() {
-        runTrain();
+        runTrain("{}");
     }
 
 
@@ -120,6 +124,10 @@ public class MainActivity extends GameActivity {
     private File selectedCsvFile = null;
     private File selectedVideoFile = null;
     private boolean telemetryRunning = false;
+    /** Native SfM / OpenCV frontend JSON (orb, BA window, LM iterations). */
+    private String nativeSfmConfigJson = "{}";
+    private KeyframeSelectionConfig keyframeSelectionConfig =
+            new KeyframeSelectionConfig(2.0, 8.0, 5.0, 1_000_000L, 0.2);
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CoroutineScope telemetryScope;
@@ -234,36 +242,6 @@ public class MainActivity extends GameActivity {
             return;
         }
 
-        // ── Extract frames (Button 3: Extract) ───────────────────────────
-        if (requestCode == REQUEST_CODE_EXTRACT_FRAMES) {
-            if (resultCode == Activity.RESULT_OK && data != null) {
-                Uri uri = data.getData();
-                if (uri != null) {
-                    selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
-                    VideoFrameExtractor.extractFrames(this, uri, new VideoFrameExtractor.ExtractionCallback() {
-                        @Override
-                        public void onFinished() {
-                            Toast.makeText(MainActivity.this, "Frames extracted!",
-                                    Toast.LENGTH_SHORT).show();
-                            notifyPlatformEvent("extraction_complete", "");
-                        }
-
-                        @Override
-                        public void onFailure(Exception e) {
-                            Log.e(TAG, "Frame extraction failed", e);
-                            Toast.makeText(MainActivity.this, "Extraction failed: " + e.getMessage(),
-                                    Toast.LENGTH_SHORT).show();
-                        }
-                    });
-                }
-            } else {
-                Toast.makeText(this, "No video selected", Toast.LENGTH_SHORT).show();
-            }
-            // Do NOT call FilePicker.onPicked — this never goes through Rust
-            super.onActivityResult(requestCode, resultCode, data);
-            return;
-        }
-
         // ── Regular Rust file picker (Button 1: File .ply viewer) ────────────
         if (requestCode == FilePicker.REQUEST_CODE_PICK_FILE) {
             int fd = -1;
@@ -299,8 +277,16 @@ public class MainActivity extends GameActivity {
 
     private void startTelemetryPreprocessIfReady() {
         if (telemetryRunning) return;
-        if (selectedCsvFile == null || selectedVideoFile == null) return;
-        if (!selectedCsvFile.exists() || !selectedVideoFile.exists()) return;
+        if (selectedCsvFile == null || selectedVideoFile == null) {
+            Toast.makeText(this, "Choose MP4 and CSV before Train", Toast.LENGTH_SHORT).show();
+            notifyPlatformEvent("train_not_ready", "");
+            return;
+        }
+        if (!selectedCsvFile.exists() || !selectedVideoFile.exists()) {
+            Toast.makeText(this, "MP4 or CSV file is missing — re-select files", Toast.LENGTH_SHORT).show();
+            notifyPlatformEvent("train_not_ready", "");
+            return;
+        }
 
         cleanupTelemetryOutputs();
         telemetryRunning = true;
@@ -328,6 +314,7 @@ public class MainActivity extends GameActivity {
                                     "Telemetry output directory is unavailable",
                                     Toast.LENGTH_LONG
                             ).show();
+                            notifyPlatformEvent("train_not_ready", "");
                             return;
                         }
                         String sessionBase = stripExtension(sequence.getLogPath().getName());
@@ -349,6 +336,7 @@ public class MainActivity extends GameActivity {
                     String msg = error.getMessage() != null ? error.getMessage() : "Telemetry preprocess failed";
                     Toast.makeText(MainActivity.this, "Telemetry preprocess failed", Toast.LENGTH_LONG).show();
                     Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                    notifyPlatformEvent("train_not_ready", "");
                 }
             }
         };
@@ -368,11 +356,67 @@ public class MainActivity extends GameActivity {
                         selectedVideoFile,
                         new long[0],
                         callback,
-                        new KeyframeSelectionConfig(),
+                        keyframeSelectionConfig,
                         outDir,
                         sessionId
                 );
         telemetryPreprocessor.start(telemetryScope);
+    }
+
+    private void applyPipelineConfigJson(String json) {
+        PipelineConfig cfg = PipelineConfig.parse(json);
+        keyframeSelectionConfig = cfg.toKeyframeSelectionConfig();
+        nativeSfmConfigJson = cfg.toNativeSfmConfigJson();
+    }
+
+    private void extractFramesFromSelectedVideo(String json) {
+        PipelineConfig cfg = PipelineConfig.parse(json);
+        if (selectedVideoFile == null || !selectedVideoFile.exists()) {
+            Toast.makeText(this, "Choose an MP4 first", Toast.LENGTH_SHORT).show();
+            notifyPlatformEvent("extraction_complete", "");
+            return;
+        }
+        Uri uri = Uri.fromFile(selectedVideoFile);
+        VideoFrameExtractor.Params params = new VideoFrameExtractor.Params();
+        params.frameCount = cfg.frameCount;
+        params.maxDecodeDimension = cfg.maxFrameDimension;
+
+        if ("telemetry".equalsIgnoreCase(cfg.extractionMode)) {
+            if (selectedCsvFile == null || !selectedCsvFile.exists()) {
+                Toast.makeText(this, "Telemetry mode needs a CSV — choose CSV first", Toast.LENGTH_LONG).show();
+                notifyPlatformEvent("extraction_complete", "");
+                return;
+            }
+            KeyframeSelectionConfig kfCfg = cfg.toKeyframeSelectionConfig();
+            long[] timesUs = KeyframePlanner.videoRelativeKeyframeTimesUs(
+                    selectedCsvFile,
+                    selectedVideoFile,
+                    kfCfg,
+                    cfg.frameCount
+            );
+            if (timesUs.length == 0) {
+                Toast.makeText(this, "No telemetry keyframes — check CSV and video", Toast.LENGTH_LONG).show();
+                notifyPlatformEvent("extraction_complete", "");
+                return;
+            }
+            params.timesUsRelative = timesUs;
+        }
+
+        VideoFrameExtractor.extractFrames(this, uri, params, new VideoFrameExtractor.ExtractionCallback() {
+            @Override
+            public void onFinished() {
+                Toast.makeText(MainActivity.this, "Frames extracted!", Toast.LENGTH_SHORT).show();
+                notifyPlatformEvent("extraction_complete", "");
+            }
+
+            @Override
+            public void onFailure(Exception e) {
+                Log.e(TAG, "Frame extraction failed", e);
+                Toast.makeText(MainActivity.this, "Extraction failed: " + e.getMessage(),
+                        Toast.LENGTH_SHORT).show();
+                notifyPlatformEvent("extraction_complete", "");
+            }
+        });
     }
 
     private File ensureLocalFileForUri(Uri uri, String prefix, String fallbackExt) {
@@ -449,7 +493,7 @@ public class MainActivity extends GameActivity {
     private void runSparseExport(PoseStampSequence sequence, File plyFile, File resultFile) {
         try {
             TelemetrySparseReconstruction.Result result =
-                    TelemetrySparseReconstruction.run(this, sequence, plyFile, resultFile);
+                    TelemetrySparseReconstruction.run(this, sequence, plyFile, resultFile, nativeSfmConfigJson);
             final boolean plyExists = plyFile.exists();
             final String toastMessage = plyExists
                     ? "Sparse PLY written: " + plyFile.getAbsolutePath()
@@ -540,6 +584,75 @@ public class MainActivity extends GameActivity {
         if (file == null || !file.exists()) return;
         if (!file.delete()) {
             Log.w(TAG, "Failed to delete stale file: " + file.getAbsolutePath());
+        }
+    }
+
+    /** Mirrors the JSON emitted from the Rust welcome screen (`AndroidPipelineConfig`). */
+    private static final class PipelineConfig {
+        String extractionMode = "uniform";
+        int maxFrameDimension = 360;
+        int frameCount = 50;
+        int orbKeypoints = 512;
+        int baWindowSize = 5;
+        int lmMaxIterations = 50;
+        double kfDistanceM = 2.0;
+        double kfYawDeg = 8.0;
+        double kfPitchDeg = 5.0;
+        double kfTimeS = 1.0;
+        double kfMinSpeedMs = 0.2;
+
+        static PipelineConfig parse(String raw) {
+            PipelineConfig c = new PipelineConfig();
+            if (raw == null || raw.trim().isEmpty()) {
+                return c;
+            }
+            try {
+                JSONObject o = new JSONObject(raw);
+                if (o.has("extraction_mode")) {
+                    c.extractionMode = o.optString("extraction_mode", c.extractionMode);
+                }
+                c.maxFrameDimension = clamp(o.optInt("max_frame_dimension", c.maxFrameDimension), 144, 720);
+                c.frameCount = clamp(o.optInt("frame_count", c.frameCount), 1, 100);
+                c.orbKeypoints = clamp(o.optInt("orb_keypoints", c.orbKeypoints), 50, 1000);
+                c.baWindowSize = clamp(o.optInt("ba_window_size", c.baWindowSize), 2, 5);
+                c.lmMaxIterations = clamp(o.optInt("lm_max_iterations", c.lmMaxIterations), 1, 2000);
+                c.kfDistanceM = o.optDouble("kf_distance_m", c.kfDistanceM);
+                c.kfYawDeg = o.optDouble("kf_yaw_deg", c.kfYawDeg);
+                c.kfPitchDeg = o.optDouble("kf_pitch_deg", c.kfPitchDeg);
+                c.kfTimeS = o.optDouble("kf_time_s", c.kfTimeS);
+                c.kfMinSpeedMs = o.optDouble("kf_min_speed_ms", c.kfMinSpeedMs);
+            } catch (JSONException e) {
+                Log.w(TAG, "Pipeline config JSON parse failed, using defaults", e);
+            }
+            return c;
+        }
+
+        private static int clamp(int v, int lo, int hi) {
+            return Math.max(lo, Math.min(hi, v));
+        }
+
+        KeyframeSelectionConfig toKeyframeSelectionConfig() {
+            long timeUs = (long) Math.round(kfTimeS * 1_000_000L);
+            return new KeyframeSelectionConfig(
+                    kfDistanceM,
+                    kfYawDeg,
+                    kfPitchDeg,
+                    timeUs,
+                    kfMinSpeedMs
+            );
+        }
+
+        String toNativeSfmConfigJson() {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("orb_n_features", orbKeypoints);
+                o.put("max_matches", Math.min(orbKeypoints, 2000));
+                o.put("ba_window_size", baWindowSize);
+                o.put("lm_max_iterations", lmMaxIterations);
+                return o.toString();
+            } catch (JSONException e) {
+                return "{}";
+            }
         }
     }
 }

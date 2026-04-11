@@ -1,6 +1,6 @@
 use opencv::{
-    core::{Mat, Vector, Point2f},
-    features2d::ORB,
+    core::{Mat, Point2f, Vector},
+    features2d::{ORB, ORB_ScoreType},
     imgcodecs,
     imgproc,
     prelude::*,
@@ -13,7 +13,10 @@ pub struct FeatureExtractionResult {
     pub descriptors: Mat,
 }
 
-pub fn extract_features(image_bytes: &[u8]) -> Result<FeatureExtractionResult, Box<dyn std::error::Error>> {
+pub fn extract_features(
+    image_bytes: &[u8],
+    n_features: i32,
+) -> Result<FeatureExtractionResult, Box<dyn std::error::Error>> {
     // Decode the image from the byte buffer
     let byte_vector: Vector<u8> = Vector::from_slice(image_bytes);
     let original_image = imgcodecs::imdecode(&byte_vector, imgcodecs::IMREAD_COLOR)?;
@@ -22,9 +25,19 @@ pub fn extract_features(image_bytes: &[u8]) -> Result<FeatureExtractionResult, B
     let mut gray_image = Mat::default();
     imgproc::cvt_color(&original_image, &mut gray_image, imgproc::COLOR_BGR2GRAY, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
     
-    // Use ORB to detect keypoints and compute descriptors
-    // N_FEATURES, SCALE_FACTOR, N_LEVELS, EDGE_THRESHOLD, FIRST_LEVEL, WTA_K, SCORE_TYPE, PATCH_SIZE, FAST_THRESHOLD
-    let mut orb = ORB::create_def()?;
+    // ORB: n_features, scale_factor, n_levels, edge_threshold, first_level, WTA_K, score_type, patch_size, fast_threshold
+    let nf = n_features.clamp(50, 10_000);
+    let mut orb = ORB::create(
+        nf,
+        1.2_f32,
+        8,
+        31,
+        0,
+        2,
+        ORB_ScoreType::HARRIS_SCORE,
+        31,
+        20,
+    )?;
     
     let mut keypoints = Vector::<opencv::core::KeyPoint>::new();
     let mut descriptors = Mat::default();
