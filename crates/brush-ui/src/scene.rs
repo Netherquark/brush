@@ -379,7 +379,10 @@ impl ScenePanel {
         // Row 2: Pipeline execution
         ui.horizontal(|ui| {
             let extract_label = if self.is_extracting { "🖼 Extracting..." } else { "🖼 Extract" };
-            if ui.add(button(extract_label, blue)).clicked() {
+            if ui
+                .add_enabled(!is_busy, button(extract_label, blue, !is_busy))
+                .clicked()
+            {
                 #[cfg(target_os = "android")]
                 {
                     self.ensure_android_pipeline_defaults();
@@ -393,7 +396,10 @@ impl ScenePanel {
             }
 
             let train_label = if self.telemetry_running { "🚂 Training..." } else { "🚂 Train" };
-            if ui.add(button(train_label, purple)).clicked() {
+            if ui
+                .add_enabled(!is_busy, button(train_label, purple, !is_busy))
+                .clicked()
+            {
                 #[cfg(target_os = "android")]
                 {
                     self.ensure_android_pipeline_defaults();
@@ -810,8 +816,10 @@ impl ScenePanel {
                                 self.ensure_android_pipeline_defaults();
                                 if let Some(popup) = &self.settings_popup {
                                     if let Ok(mut p) = popup.lock() {
-                                        p.args.train_config.total_steps = self.android_train_steps;
-                                        p.args.train_config.max_splats = self.android_train_max_splats;
+                                        p.sync_android_train_overrides(
+                                            self.android_train_steps,
+                                            self.android_train_max_splats,
+                                        );
                                     }
                                 }
                             }

@@ -127,8 +127,17 @@ fn call_java_static_string(method: &str, arg: &str) {
         }
     };
 
+    let class_obj = match env.new_local_ref(class) {
+        Ok(c) => c,
+        Err(err) => {
+            log::error!("Failed to local-ref MainActivity for {method}: {err:?}");
+            return;
+        }
+    };
+    let class: &jni::objects::JClass = (&class_obj).into();
+
     if let Err(err) = env.call_static_method(
-        class.as_obj(),
+        class,
         method,
         "(Ljava/lang/String;)V",
         &[jni::objects::JValue::Object(&jstr)],

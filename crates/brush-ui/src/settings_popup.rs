@@ -50,6 +50,13 @@ impl SettingsPopup {
         sender.is_closed()
     }
 
+    /// Keep settings popup training sliders aligned with Android scene panel overrides.
+    #[cfg(target_os = "android")]
+    pub(crate) fn sync_android_train_overrides(&mut self, total_steps: u32, max_splats: u32) {
+        self.args.train_config.total_steps = total_steps;
+        self.args.train_config.max_splats = max_splats;
+    }
+
     pub(crate) fn ui(&mut self, ui: &egui::Ui, center: egui::Pos2) {
         if self.is_done() {
             return;

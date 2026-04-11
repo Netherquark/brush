@@ -39,16 +39,14 @@ public class VideoFrameExtractor {
     }
 
     public static void extractFrames(Context context, Uri videoUri, Params params, ExtractionCallback callback) {
-        if (params == null) {
-            params = new Params();
-        }
+        final Params extractionParams = params != null ? params : new Params();
         cleanupExtractedFrames(context);
 
         final int totalSteps;
-        if (params.timesUsRelative != null && params.timesUsRelative.length > 0) {
-            totalSteps = params.timesUsRelative.length;
+        if (extractionParams.timesUsRelative != null && extractionParams.timesUsRelative.length > 0) {
+            totalSteps = extractionParams.timesUsRelative.length;
         } else {
-            totalSteps = Math.max(1, Math.min(params.frameCount, 100));
+            totalSteps = Math.max(1, Math.min(extractionParams.frameCount, 100));
         }
 
         final AlertDialog[] dialogHolder = new AlertDialog[1];
@@ -91,7 +89,7 @@ public class VideoFrameExtractor {
             });
         }
 
-        final int dim = Math.max(96, Math.min(params.maxDecodeDimension, 4096));
+        final int dim = Math.max(96, Math.min(extractionParams.maxDecodeDimension, 4096));
 
         new Thread(() -> {
             try {
@@ -112,7 +110,7 @@ public class VideoFrameExtractor {
                 if (outputDir != null && !outputDir.exists()) outputDir.mkdirs();
                 int writtenFrames = 0;
 
-                if (durationMs <= 0 && (params.timesUsRelative == null || params.timesUsRelative.length == 0)) {
+                if (durationMs <= 0 && (extractionParams.timesUsRelative == null || extractionParams.timesUsRelative.length == 0)) {
                     Bitmap single = retriever.getFrameAtTime(0);
                     if (single != null) {
                         single = scaleDownIfNeeded(single, dim);
@@ -130,8 +128,8 @@ public class VideoFrameExtractor {
 
                 for (int i = 0; i < totalSteps; i++) {
                     long timeUs;
-                    if (params.timesUsRelative != null && params.timesUsRelative.length > 0) {
-                        timeUs = params.timesUsRelative[Math.min(i, params.timesUsRelative.length - 1)];
+                    if (extractionParams.timesUsRelative != null && extractionParams.timesUsRelative.length > 0) {
+                        timeUs = extractionParams.timesUsRelative[Math.min(i, extractionParams.timesUsRelative.length - 1)];
                         if (durationUs > 0) {
                             timeUs = Math.min(timeUs, durationUs - 1);
                         }
