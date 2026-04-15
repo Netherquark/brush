@@ -219,15 +219,19 @@ public class MainActivity extends GameActivity {
                     } catch (Exception e) {
                         Log.i(TAG, "Could not take persistable permission: " + e);
                     }
-                    selectedConfigFile = ensureLocalFileForUri(uri, "telemetry_config_", ".json");
-                    if (selectedConfigFile != null) {
-                        Log.i(TAG, "Config picked: " + selectedConfigFile.getAbsolutePath());
-                        Toast.makeText(this, "Config: " + selectedConfigFile.getName(),
-                                Toast.LENGTH_SHORT).show();
-                        notifyPlatformEvent("config_picked", selectedConfigFile.getAbsolutePath());
-                    } else {
-                        Toast.makeText(this, "Failed to read config file", Toast.LENGTH_SHORT).show();
-                    }
+                    backgroundExecutor.execute(() -> {
+                        selectedConfigFile = ensureLocalFileForUri(uri, "telemetry_config_", ".json");
+                        runOnUiThread(() -> {
+                            if (selectedConfigFile != null) {
+                                Log.i(TAG, "Config picked: " + selectedConfigFile.getAbsolutePath());
+                                Toast.makeText(this, "Config: " + selectedConfigFile.getName(),
+                                        Toast.LENGTH_SHORT).show();
+                                notifyPlatformEvent("config_picked", selectedConfigFile.getAbsolutePath());
+                            } else {
+                                Toast.makeText(this, "Failed to read config file", Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    });
                 }
             }
             super.onActivityResult(requestCode, resultCode, data);
@@ -253,16 +257,20 @@ public class MainActivity extends GameActivity {
                         Toast.makeText(this, "Only CSV telemetry logs are supported",
                                 Toast.LENGTH_SHORT).show();
                     } else {
-                        selectedCsvFile = ensureLocalFileForUri(uri, "telemetry_csv_", ".csv");
-                        if (selectedCsvFile != null) {
-                            Log.i(TAG, "CSV picked: " + selectedCsvFile.getAbsolutePath());
-                            Toast.makeText(this, "CSV selected: " + selectedCsvFile.getName(),
-                                    Toast.LENGTH_SHORT).show();
-                            notifyPlatformEvent("csv_picked", selectedCsvFile.getAbsolutePath());
-                        } else {
-                            Toast.makeText(this, "Failed to read telemetry CSV",
-                                    Toast.LENGTH_SHORT).show();
-                        }
+                        backgroundExecutor.execute(() -> {
+                            selectedCsvFile = ensureLocalFileForUri(uri, "telemetry_csv_", ".csv");
+                            runOnUiThread(() -> {
+                                if (selectedCsvFile != null) {
+                                    Log.i(TAG, "CSV picked: " + selectedCsvFile.getAbsolutePath());
+                                    Toast.makeText(this, "CSV selected: " + selectedCsvFile.getName(),
+                                            Toast.LENGTH_SHORT).show();
+                                    notifyPlatformEvent("csv_picked", selectedCsvFile.getAbsolutePath());
+                                } else {
+                                    Toast.makeText(this, "Failed to read telemetry CSV",
+                                            Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        });
                     }
                 }
             }
@@ -284,15 +292,19 @@ public class MainActivity extends GameActivity {
                     } catch (Exception e) {
                         Log.i(TAG, "Could not take persistable permission: " + e);
                     }
-                    selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
-                    if (selectedVideoFile != null) {
-                        Log.i(TAG, "MP4 picked: " + selectedVideoFile.getAbsolutePath());
-                        Toast.makeText(this, "MP4 selected: " + selectedVideoFile.getName(),
-                                Toast.LENGTH_SHORT).show();
-                        notifyPlatformEvent("mp4_picked", selectedVideoFile.getAbsolutePath());
-                    } else {
-                        Toast.makeText(this, "Failed to read MP4", Toast.LENGTH_SHORT).show();
-                    }
+                    backgroundExecutor.execute(() -> {
+                        selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
+                        runOnUiThread(() -> {
+                            if (selectedVideoFile != null) {
+                                Log.i(TAG, "MP4 picked: " + selectedVideoFile.getAbsolutePath());
+                                Toast.makeText(this, "MP4 selected: " + selectedVideoFile.getName(),
+                                        Toast.LENGTH_SHORT).show();
+                                notifyPlatformEvent("mp4_picked", selectedVideoFile.getAbsolutePath());
+                            } else {
+                                Toast.makeText(this, "Failed to read MP4", Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    });
                 }
             }
             super.onActivityResult(requestCode, resultCode, data);
@@ -479,6 +491,11 @@ public class MainActivity extends GameActivity {
             Log.i(TAG, "Initiating frame extraction...");
             VideoFrameExtractor.extractFrames(this, uri, params, new VideoFrameExtractor.ExtractionCallback() {
                 @Override
+                public void onProgress(float progress) {
+                    notifyPlatformEvent("progress:extracting", String.format(Locale.US, "%.3f", progress));
+                }
+
+                @Override
                 public void onFinished() {
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "Frames extracted!", Toast.LENGTH_SHORT).show());
                     notifyPlatformEvent("extraction_complete", "");
@@ -522,15 +539,39 @@ public class MainActivity extends GameActivity {
                 );
             }
 
+            long totalSize = 0;
+            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
+                    if (sizeIndex != -1) totalSize = cursor.getLong(sizeIndex);
+                }
+            }
+
+            Log.i(TAG, "Caching file: " + originalName + " size=" + totalSize);
+            notifyPlatformEvent("progress:caching", "0.0");
+
             try (InputStream in = getContentResolver().openInputStream(uri);
                  OutputStream outStream = new FileOutputStream(out)) {
                 if (in == null) return null;
-                byte[] buffer = new byte[8192];
+                byte[] buffer = new byte[65536];
                 int read;
+                long bytesCopied = 0;
+                long lastUpdate = System.currentTimeMillis();
+
                 while ((read = in.read(buffer)) != -1) {
                     outStream.write(buffer, 0, read);
+                    bytesCopied += read;
+                    
+                    long now = System.currentTimeMillis();
+                    if (totalSize > 0 && now - lastUpdate > 100) {
+                        float progress = (float) bytesCopied / totalSize;
+                        notifyPlatformEvent("progress:caching", String.format(Locale.US, "%.3f", progress));
+                        lastUpdate = now;
+                    }
                 }
+                outStream.flush();
             }
+            notifyPlatformEvent("progress:caching", "1.0");
 
             return out;
         } catch (Exception e) {

@@ -177,6 +177,8 @@ pub struct ScenePanel {
     #[cfg(target_os = "android")]
     #[serde(skip)]
     android_kf_min_speed_ms: f64,
+    #[serde(skip)]
+    platform_progress_msg: Option<String>,
 }
 
 #[cfg(target_os = "android")]
@@ -476,6 +478,19 @@ impl ScenePanel {
                 self.telemetry_running = true;
             }
         });
+        
+        let progress = process.platform_progress();
+        if let Some(msg) = &self.platform_progress_msg {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{}:", msg)).size(11.0));
+                ui.add(egui::ProgressBar::new(progress).show_percentage());
+            });
+        } else if is_busy {
+            // Fallback for cases where we don't have a specific message yet
+            ui.add_space(4.0);
+            ui.add(egui::ProgressBar::new(progress).animate(true));
+        }
 
         // Non-Android: keep directory and URL buttons
         if !cfg!(target_os = "android") {
@@ -857,12 +872,21 @@ impl ScenePanel {
                 } => {
                     if event_type == "mp4_picked" {
                         self.selected_mp4 = Some(name);
+                        self.platform_progress_msg = None;
                     } else if event_type == "csv_picked" {
                         self.selected_csv = Some(name);
+                        self.platform_progress_msg = None;
                     } else if event_type == "config_picked" {
                         self.selected_config = Some(name);
                         self.selected_config_path = Some(path);
+                        self.platform_progress_msg = None;
                     }
+                }
+                crate::ui_process::PlatformEvent::Progress {
+                    event_type,
+                    progress: _,
+                } => {
+                    self.platform_progress_msg = Some(event_type);
                 }
                 crate::ui_process::PlatformEvent::ProcessComplete {
                     event_type,
@@ -872,6 +896,7 @@ impl ScenePanel {
                     match event_type.as_str() {
                         "extraction_complete" | "extraction_failed" => {
                             self.is_extracting = false;
+                            self.platform_progress_msg = None;
                         }
                         "telemetry_complete" | "telemetry_failed" => {
                             self.telemetry_running = false;

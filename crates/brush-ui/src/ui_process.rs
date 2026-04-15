@@ -6,7 +6,7 @@ use brush_render::{MainBackend, camera::Camera, gaussian_splats::Splats};
 use burn_wgpu::WgpuDevice;
 use egui::{Response, TextureHandle};
 use glam::{Affine3A, Quat, Vec3};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_with_wasm::alias::task;
@@ -28,6 +28,10 @@ pub enum PlatformEvent {
         success: bool,
         data: String,
     },
+    Progress {
+        event_type: String,
+        progress: f32,
+    },
 }
 
 struct ProcessHandle {
@@ -36,7 +40,7 @@ struct ProcessHandle {
     splat_view: Slot<Splats<MainBackend>>,
 }
 
-pub type PlatformCallback = Box<dyn Fn() + Send + Sync>;
+pub type PlatformCallback = Arc<dyn Fn() + Send + Sync>;
 
 /// A thread-safe wrapper around the UI process.
 /// This allows the UI process to be accessed from multiple threads.
@@ -325,7 +329,8 @@ impl UiProcess {
     }
 
     pub fn call_platform_action(&self, name: &str) {
-        if let Some(callback) = self.read().platform_actions.get(name) {
+        let callback = self.read().platform_actions.get(name).cloned();
+        if let Some(callback) = callback {
             if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
             {
                 log::error!("Platform action '{name}' panicked: {err:?}");
@@ -352,9 +357,16 @@ impl UiProcess {
         let mut events = vec![];
         let mut inner = self.write();
         while let Ok(event) = inner.platform_events.1.try_recv() {
+            if let PlatformEvent::Progress { progress, .. } = &event {
+                inner.platform_progress = *progress;
+            }
             events.push(event);
         }
         events
+    }
+
+    pub fn platform_progress(&self) -> f32 {
+        self.read().platform_progress
     }
 }
 
@@ -377,6 +389,7 @@ struct UiProcessInner {
     platform_actions: HashMap<String, PlatformCallback>,
     /// Optional JSON consumed by Android `extract_frames` / `run_train`.
     platform_action_payload: Option<String>,
+    platform_progress: f32,
 }
 
 impl UiProcessInner {
@@ -405,6 +418,7 @@ impl UiProcessInner {
             ui_ctx,
             platform_actions: HashMap::new(),
             platform_action_payload: None,
+            platform_progress: 0.0,
         }
     }
 

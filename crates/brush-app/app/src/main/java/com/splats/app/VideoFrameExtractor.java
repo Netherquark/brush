@@ -23,6 +23,7 @@ public class VideoFrameExtractor {
     private static final int JPEG_QUALITY = 85;
 
     public interface ExtractionCallback {
+        void onProgress(float progress);
         void onFinished();
         void onFailure(Exception e);
     }
@@ -149,6 +150,8 @@ public class VideoFrameExtractor {
 
                     // Skip redundant seeks if the gap is < 1ms
                     if (i > 0 && Math.abs(timeUs - lastTimeUs) < 1000L) {
+                        float progress = (float)(i + 1) / totalSteps;
+                        if (callback != null) callback.onProgress(progress);
                         updateProgress(context, progressBarHolder[0], statusTextHolder[0], i + 1, totalSteps);
                         continue;
                     }
@@ -203,6 +206,8 @@ public class VideoFrameExtractor {
                         Log.e(TAG, "Error extracting frame " + i, t);
                     }
 
+                    float progress = (float)(i + 1) / totalSteps;
+                    if (callback != null) callback.onProgress(progress);
                     updateProgress(context, progressBarHolder[0], statusTextHolder[0], i + 1, totalSteps);
                 }
 
