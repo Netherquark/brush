@@ -305,7 +305,7 @@ impl ScenePanel {
                 .stroke(egui::Stroke::NONE)
         };
 
-        // Row 1: Data selection
+        // Row 1: Primary Data selection
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!is_busy, button("📁 File", blue, !is_busy))
@@ -324,6 +324,12 @@ impl ScenePanel {
             {
                 process.call_platform_action("choose_mp4");
             }
+        });
+
+        ui.add_space(4.0);
+
+        // Row 2: Secondary Data selection (Telemetry + Config)
+        ui.horizontal(|ui| {
             let csv_label = self
                 .selected_csv
                 .as_ref()
