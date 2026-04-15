@@ -73,6 +73,7 @@ public final class TelemetrySparseReconstruction {
         }
 
         String cfg = (nativeConfigJson != null && !nativeConfigJson.isEmpty()) ? nativeConfigJson : "{}";
+        Log.i(TAG, "Invoking native SfM pipeline with " + frames.size() + " frames, GPS=" + gps.length() + ", IMU=" + imu.length());
         String resultJson = OpenCvFrontendLib.runFullPipelineSync(
                 framesJson(frames).toString(),
                 intrinsicsJson(intrinsics).toString(),
@@ -81,6 +82,7 @@ public final class TelemetrySparseReconstruction {
                 gps.toString(),
                 imu.toString()
         );
+        Log.i(TAG, "Native SfM pipeline returned result length: " + (resultJson != null ? resultJson.length() : 0));
 
         JSONObject finalResult = new JSONObject(resultJson);
         if (finalResult.has("error")) {

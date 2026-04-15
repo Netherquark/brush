@@ -114,9 +114,12 @@ public class MainActivity extends GameActivity {
 
     /** Unified Train button – runs full SfM pipeline (3.1 - 3.8) */
     public static void runTrain(String configJson) {
-        if (instance == null) return;
+        if (instance == null) {
+            Log.w(TAG, "runTrain called but instance is null!");
+            return;
+        }
         instance.runOnUiThread(() -> {
-            Log.i(TAG, "runTrain from Rust");
+            Log.i(TAG, "runTrain from Rust. Config: " + configJson);
             instance.applyPipelineConfigJson(configJson != null ? configJson : "{}");
             instance.startTelemetryPreprocessIfReady();
         });
@@ -191,6 +194,7 @@ public class MainActivity extends GameActivity {
         }
         ActivityCoroutineScope.cancel(telemetryScope);
         backgroundExecutor.shutdownNow();
+        instance = null; // Prevent leaks and stale JNI calls
         super.onDestroy();
     }
 
@@ -212,6 +216,7 @@ public class MainActivity extends GameActivity {
                     }
                     selectedConfigFile = ensureLocalFileForUri(uri, "telemetry_config_", ".json");
                     if (selectedConfigFile != null) {
+                        Log.i(TAG, "Config picked: " + selectedConfigFile.getAbsolutePath());
                         Toast.makeText(this, "Config: " + selectedConfigFile.getName(),
                                 Toast.LENGTH_SHORT).show();
                         notifyPlatformEvent("config_picked", selectedConfigFile.getAbsolutePath());
@@ -245,6 +250,7 @@ public class MainActivity extends GameActivity {
                     } else {
                         selectedCsvFile = ensureLocalFileForUri(uri, "telemetry_csv_", ".csv");
                         if (selectedCsvFile != null) {
+                            Log.i(TAG, "CSV picked: " + selectedCsvFile.getAbsolutePath());
                             Toast.makeText(this, "CSV selected: " + selectedCsvFile.getName(),
                                     Toast.LENGTH_SHORT).show();
                             notifyPlatformEvent("csv_picked", selectedCsvFile.getAbsolutePath());
@@ -265,8 +271,17 @@ public class MainActivity extends GameActivity {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 Uri uri = data.getData();
                 if (uri != null) {
+                    try {
+                        int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                        if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0)
+                            takeFlags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+                        getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                    } catch (Exception e) {
+                        Log.i(TAG, "Could not take persistable permission: " + e);
+                    }
                     selectedVideoFile = ensureLocalFileForUri(uri, "telemetry_video_", ".mp4");
                     if (selectedVideoFile != null) {
+                        Log.i(TAG, "MP4 picked: " + selectedVideoFile.getAbsolutePath());
                         Toast.makeText(this, "MP4 selected: " + selectedVideoFile.getName(),
                                 Toast.LENGTH_SHORT).show();
                         notifyPlatformEvent("mp4_picked", selectedVideoFile.getAbsolutePath());
@@ -275,7 +290,6 @@ public class MainActivity extends GameActivity {
                     }
                 }
             }
-            // Do NOT call FilePicker.onPicked — this never goes through Rust
             super.onActivityResult(requestCode, resultCode, data);
             return;
         }
@@ -315,13 +329,13 @@ public class MainActivity extends GameActivity {
 
     private void startTelemetryPreprocessIfReady() {
         if (telemetryRunning) return;
-        if (selectedCsvFile == null || selectedVideoFile == null) {
-            Toast.makeText(this, "Choose MP4 and CSV before Train", Toast.LENGTH_SHORT).show();
+        if (selectedVideoFile == null || !selectedVideoFile.exists()) {
+            Toast.makeText(this, "Pick an MP4 before training", Toast.LENGTH_SHORT).show();
             notifyPlatformEvent("train_not_ready", "");
             return;
         }
-        if (!selectedCsvFile.exists() || !selectedVideoFile.exists()) {
-            Toast.makeText(this, "MP4 or CSV file is missing — re-select files", Toast.LENGTH_SHORT).show();
+        if (selectedCsvFile == null || !selectedCsvFile.exists()) {
+            Toast.makeText(this, "Pick a CSV log before training", Toast.LENGTH_SHORT).show();
             notifyPlatformEvent("train_not_ready", "");
             return;
         }

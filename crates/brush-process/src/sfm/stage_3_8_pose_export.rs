@@ -37,6 +37,7 @@ pub fn export_sfm_results(
     // 1. Export sparse.ply
     let ply_path = output_dir.join("sparse.ply");
     write_global_state_ply(&ply_path, global)?;
+    log::info!("Stage 3.8: Written sparse PLY to: {:?}", ply_path);
 
     // 2. Export transforms.json
     let mut frames = Vec::new();
@@ -94,7 +95,8 @@ pub fn export_sfm_results(
 
     let json_path = output_dir.join("transforms.json");
     let json_str = serde_json::to_string_pretty(&transforms)?;
-    fs::write(json_path, json_str)?;
+    fs::write(&json_path, json_str)?;
+    log::info!("Stage 3.8: Written transforms.json to: {:?}. Exported {} frames.", json_path, transforms.frames.len());
 
     Ok(())
 }

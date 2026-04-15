@@ -61,93 +61,83 @@ pub unsafe extern "system" fn Java_com_splats_app_MainActivity_notifyPlatformEve
     }
 }
 
-#[cfg(target_os = "android")]
-fn call_java_static(method: &str) {
-    let vm = match rrfd::android::get_jvm() {
-        Some(vm) => vm,
-        None => {
-            log::error!("JVM not initialized when calling MainActivity.{method}()");
-            return;
-        }
-    };
-    let mut env = match vm.attach_current_thread() {
+fn with_attached_env<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut jni::JNIEnv, &jni::objects::JClass) -> R,
+{
+    let vm = rrfd::android::get_jvm()?;
+    // Get the env if already attached, or attach as daemon.
+    // daemon prevents the JVM from hanging on shutdown waiting for our threads.
+    let mut env = match vm.get_env() {
         Ok(env) => env,
-        Err(err) => {
-            log::error!("Failed to attach JNI thread for MainActivity.{method}(): {err:?}");
-            return;
-        }
+        Err(e) => match vm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(attach_err) => {
+                log::error!("JNI error: get_env failed ({:?}) and attach failed ({:?})", e, attach_err);
+                return None;
+            }
+        },
     };
 
     let class_ref = MAIN_ACTIVITY_CLASS.read().unwrap();
-    let Some(class) = class_ref.as_ref() else {
-        log::error!("MainActivity class not cached when calling {method}()");
-        return;
+    let Some(class_global) = class_ref.as_ref() else {
+        log::error!("MainActivity class global ref not found");
+        return None;
     };
 
-    let class_obj = env.new_local_ref(class).unwrap();
+    let class_obj = match env.new_local_ref(class_global) {
+        Ok(c) => c,
+        Err(err) => {
+            log::error!("Failed to create local ref for MainActivity: {err:?}");
+            return None;
+        }
+    };
     let class: &jni::objects::JClass = (&class_obj).into();
 
-    if let Err(err) = env.call_static_method(class, method, "()V", &[]) {
-        log::error!("Failed to call MainActivity.{method}(): {err:?}");
-        if env.exception_check().unwrap_or(false) {
-            let _ = env.exception_describe();
-            let _ = env.exception_clear();
+    Some(f(&mut env, class))
+}
+
+#[cfg(target_os = "android")]
+fn call_java_static(method: &str) {
+    with_attached_env(|env, class| {
+        if let Err(err) = env.call_static_method(class, method, "()V", &[]) {
+            log::error!("Failed to call MainActivity.{method}(): {err:?}");
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+        } else {
+            log::info!("Successfully called MainActivity.{method}()");
         }
-    }
+    });
 }
 
 #[cfg(target_os = "android")]
 fn call_java_static_string(method: &str, arg: &str) {
-    let vm = match rrfd::android::get_jvm() {
-        Some(vm) => vm,
-        None => {
-            log::error!("JVM not initialized when calling MainActivity.{method}(String)");
-            return;
-        }
-    };
-    let mut env = match vm.attach_current_thread() {
-        Ok(env) => env,
-        Err(err) => {
-            log::error!("Failed to attach JNI thread for MainActivity.{method}(String): {err:?}");
-            return;
-        }
-    };
+    with_attached_env(|env, class| {
+        let jstr = match env.new_string(arg) {
+            Ok(s) => s,
+            Err(err) => {
+                log::error!("Failed to allocate jstring for MainActivity.{method}: {err:?}");
+                return;
+            }
+        };
 
-    let class_ref = MAIN_ACTIVITY_CLASS.read().unwrap();
-    let Some(class) = class_ref.as_ref() else {
-        log::error!("MainActivity class not cached when calling {method}(String)");
-        return;
-    };
-
-    let jstr = match env.new_string(arg) {
-        Ok(s) => s,
-        Err(err) => {
-            log::error!("Failed to allocate jstring for MainActivity.{method}: {err:?}");
-            return;
+        if let Err(err) = env.call_static_method(
+            class,
+            method,
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&jstr)],
+        ) {
+            log::error!("Failed to call MainActivity.{method}(String): {err:?}");
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+        } else {
+            log::info!("Successfully called MainActivity.{method}(String)");
         }
-    };
-
-    let class_obj = match env.new_local_ref(class) {
-        Ok(c) => c,
-        Err(err) => {
-            log::error!("Failed to local-ref MainActivity for {method}: {err:?}");
-            return;
-        }
-    };
-    let class: &jni::objects::JClass = (&class_obj).into();
-
-    if let Err(err) = env.call_static_method(
-        class,
-        method,
-        "(Ljava/lang/String;)V",
-        &[jni::objects::JValue::Object(&jstr)],
-    ) {
-        log::error!("Failed to call MainActivity.{method}(String): {err:?}");
-        if env.exception_check().unwrap_or(false) {
-            let _ = env.exception_describe();
-            let _ = env.exception_clear();
-        }
-    }
+    });
 }
 
 #[unsafe(no_mangle)]

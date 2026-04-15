@@ -117,6 +117,8 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             val startMs  = System.currentTimeMillis()
             val warnings = mutableListOf<String>()
 
+            Log.i(logTag, "Starting telemetry process for CSV: ${csvFile.name}, Video: ${videoFile.name}")
+
             // Input validation
             if (!csvFile.exists())   throw TelemetryError.CsvNotFound(csvFile.absolutePath)
             if (!videoFile.exists()) throw TelemetryError.VideoNotFound(videoFile.absolutePath)
@@ -137,6 +139,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             } else {
                 parsedRows
             }
+            Log.i(logTag, "Parsed ${dataRows.size} rows, retained ${rawRows.size} after time filter.")
             reportProgress(ProcessingStage.PARSING, 1.0f)
 
             // Stage 3: Row validation
@@ -164,6 +167,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
                 val cands = selectKeyframes(validRows, activeKeyframeConfig)
                 LongArray(cands.size) { cands[it].timestampUs }
             }
+            Log.i(logTag, "Selected ${kfTimestampsUs.size} keyframe candidates.")
 
             // Stage 6: Time sync bypassing (alignment already guaranteed via filename clipping)
             reportProgress(ProcessingStage.SYNCING, 0.0f)
@@ -199,6 +203,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
                 videoPath = videoFile,
                 createdAt = System.currentTimeMillis()
             )
+            Log.i(logTag, "Emitting PoseStampSequence with ${sequence.records.size} records to session $sessionId")
             // Stash config JSON on PoseStampSequence or just wait - telemetryPreprocessor doesn't pass it directly to TSReconstruction.
             // Wait, we need it in TSReconstruction!
             // I'll add configJsonStr into the report or callback!

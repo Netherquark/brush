@@ -126,7 +126,12 @@ public class VideoFrameExtractor {
                     return;
                 }
 
+                Log.i(TAG, "Starting extraction loop. Steps: " + totalSteps);
+                long lastTimeUs = -2000L;
                 for (int i = 0; i < totalSteps; i++) {
+                    if (i % 10 == 0) {
+                        Log.i(TAG, "Extraction step " + i + " of " + totalSteps);
+                    }
                     long timeUs;
                     if (extractionParams.timesUsRelative != null && extractionParams.timesUsRelative.length > 0) {
                         timeUs = extractionParams.timesUsRelative[Math.min(i, extractionParams.timesUsRelative.length - 1)];
@@ -141,6 +146,13 @@ public class VideoFrameExtractor {
                             timeUs = (durationUs * (long) i) / (long) (totalSteps - 1);
                         }
                     }
+
+                    // Skip redundant seeks if the gap is < 1ms
+                    if (i > 0 && Math.abs(timeUs - lastTimeUs) < 1000L) {
+                        updateProgress(context, progressBarHolder[0], statusTextHolder[0], i + 1, totalSteps);
+                        continue;
+                    }
+                    lastTimeUs = timeUs;
 
                     Bitmap bitmap = null;
                     try {

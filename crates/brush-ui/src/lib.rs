@@ -55,6 +55,7 @@ pub fn create_egui_options() -> WgpuConfiguration {
                 ..Default::default()
             },
         ),
+        present_mode: wgpu::PresentMode::Fifo,
         ..Default::default()
     }
 }

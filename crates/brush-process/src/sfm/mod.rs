@@ -97,14 +97,23 @@ pub fn run_opencv_frontend(
     config: &OpenCvFrontendConfig,
 ) -> anyhow::Result<OpenCvFrontendResult> {
     let matching = match_feature_sets(frame_a, frame_b, &config.matching)?;
+    log::info!("Stage 3.2: Matched {} features", matching.matches.len());
+
     anyhow::ensure!(
         matching.matches.len() >= 8,
         "need at least 8 matches, got {}",
         matching.matches.len()
     );
+
     let essential = estimate_essential_matrix(&matching, &intrinsics, &config.ransac)?;
+    log::info!("Stage 3.3: Essential matrix estimated with {} inliers", essential.inlier_mask.iter().filter(|&&v| v != 0).count());
+
     let pose = recover_relative_pose(&essential, &intrinsics)?;
+    log::info!("Stage 3.4: Relative pose recovered");
+
     let triangulated = triangulate_inlier_points(&essential, &pose, &intrinsics)?;
+    log::info!("Stage 3.5: Triangulated {} points", triangulated.len());
+
     let stage_3_6 = build_stage_3_6_output(
         &matching,
         &pose,
@@ -114,6 +123,7 @@ pub fn run_opencv_frontend(
         imu_priors,
         &config.inlier_filtering,
     )?;
+    log::info!("Stage 3.6: Inlier filtering complete. {} points retained", stage_3_6.point_positions.len());
     anyhow::ensure!(
         !stage_3_6.point_positions.is_empty(),
         "no triangulated inlier points survived stage 3.6"
@@ -198,6 +208,8 @@ pub mod jni_bridge {
             let gps_str = to_string(gps_json);
             let imu_str = to_string(imu_json);
             let out_dir_str = to_string(output_dir);
+
+            log::info!("Native runFullTrainSync started. Output dir: {}", out_dir_str);
 
             let json = match run_full_pipeline_from_json(
                 &frames_str,
