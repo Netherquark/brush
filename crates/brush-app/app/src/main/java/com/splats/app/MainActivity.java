@@ -146,6 +146,11 @@ public class MainActivity extends GameActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CoroutineScope telemetryScope;
     private TelemetryPreprocessor telemetryPreprocessor;
+    
+    /** Returns the device model string (e.g. "Pixel 9a" or "23049PCD8G" for Poco F5). */
+    public static String getDeviceModel() {
+        return "MFG:" + Build.MANUFACTURER + ";MOD:" + Build.MODEL + ";BRD:" + Build.BOARD + ";HW:" + Build.HARDWARE;
+    }
 
     private void hideSystemUI() {
         getWindow().getAttributes().layoutInDisplayCutoutMode =
@@ -435,52 +440,55 @@ public class MainActivity extends GameActivity {
     }
 
     private void extractFramesFromSelectedVideo(String json) {
-        PipelineConfig cfg = PipelineConfig.parse(json);
-        if (selectedVideoFile == null || !selectedVideoFile.exists()) {
-            Toast.makeText(this, "Choose an MP4 first", Toast.LENGTH_SHORT).show();
-            notifyPlatformEvent("extraction_complete", "");
-            return;
-        }
-        Uri uri = Uri.fromFile(selectedVideoFile);
-        VideoFrameExtractor.Params params = new VideoFrameExtractor.Params();
-        params.frameCount = cfg.frameCount;
-        params.maxDecodeDimension = cfg.maxFrameDimension;
-
-        if ("telemetry".equalsIgnoreCase(cfg.extractionMode)) {
-            if (selectedCsvFile == null || !selectedCsvFile.exists()) {
-                Toast.makeText(this, "Telemetry mode needs a CSV — choose CSV first", Toast.LENGTH_LONG).show();
+        backgroundExecutor.execute(() -> {
+            PipelineConfig cfg = PipelineConfig.parse(json);
+            if (selectedVideoFile == null || !selectedVideoFile.exists()) {
+                runOnUiThread(() -> Toast.makeText(this, "Choose an MP4 first", Toast.LENGTH_SHORT).show());
                 notifyPlatformEvent("extraction_complete", "");
                 return;
             }
-            KeyframeSelectionConfig kfCfg = cfg.toKeyframeSelectionConfig();
-            long[] timesUs = KeyframePlanner.videoRelativeKeyframeTimesUs(
-                    selectedCsvFile,
-                    selectedVideoFile,
-                    kfCfg,
-                    cfg.frameCount
-            );
-            if (timesUs.length == 0) {
-                Toast.makeText(this, "No telemetry keyframes — check CSV and video", Toast.LENGTH_LONG).show();
-                notifyPlatformEvent("extraction_complete", "");
-                return;
-            }
-            params.timesUsRelative = timesUs;
-        }
+            Uri uri = Uri.fromFile(selectedVideoFile);
+            VideoFrameExtractor.Params params = new VideoFrameExtractor.Params();
+            params.frameCount = cfg.frameCount;
+            params.maxDecodeDimension = cfg.maxFrameDimension;
 
-        VideoFrameExtractor.extractFrames(this, uri, params, new VideoFrameExtractor.ExtractionCallback() {
-            @Override
-            public void onFinished() {
-                Toast.makeText(MainActivity.this, "Frames extracted!", Toast.LENGTH_SHORT).show();
-                notifyPlatformEvent("extraction_complete", "");
+            if ("telemetry".equalsIgnoreCase(cfg.extractionMode)) {
+                if (selectedCsvFile == null || !selectedCsvFile.exists()) {
+                    runOnUiThread(() -> Toast.makeText(this, "Telemetry mode needs a CSV — choose CSV first", Toast.LENGTH_LONG).show());
+                    notifyPlatformEvent("extraction_complete", "");
+                    return;
+                }
+                
+                Log.i(TAG, "Planning keyframes from CSV in background...");
+                KeyframeSelectionConfig kfCfg = cfg.toKeyframeSelectionConfig();
+                long[] timesUs = KeyframePlanner.videoRelativeKeyframeTimesUs(
+                        selectedCsvFile,
+                        selectedVideoFile,
+                        kfCfg,
+                        cfg.frameCount
+                );
+                
+                if (timesUs.length == 0) {
+                    runOnUiThread(() -> Toast.makeText(this, "No telemetry keyframes — check CSV and video", Toast.LENGTH_LONG).show());
+                    notifyPlatformEvent("extraction_complete", "");
+                    return;
+                }
+                params.timesUsRelative = timesUs;
             }
 
-            @Override
-            public void onFailure(Exception e) {
-                Log.e(TAG, "Frame extraction failed", e);
-                Toast.makeText(MainActivity.this, "Extraction failed: " + e.getMessage(),
-                        Toast.LENGTH_SHORT).show();
-                notifyPlatformEvent("extraction_complete", "");
-            }
+            Log.i(TAG, "Initiating frame extraction...");
+            VideoFrameExtractor.extractFrames(this, uri, params, new VideoFrameExtractor.ExtractionCallback() {
+                @Override
+                public void onFinished() {
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Frames extracted!", Toast.LENGTH_SHORT).show());
+                    notifyPlatformEvent("extraction_complete", "");
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+                    notifyPlatformEvent("extraction_complete", "error");
+                }
+            });
         });
     }
 

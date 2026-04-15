@@ -39,15 +39,43 @@ pub enum UiMode {
 }
 
 pub fn create_egui_options() -> WgpuConfiguration {
+    create_egui_options_with_hints(None)
+}
+
+pub fn create_egui_options_with_hints(device_hint: Option<&str>) -> WgpuConfiguration {
+    let mut backends = wgpu::Backends::all();
+
+    #[cfg(target_os = "android")]
+    {
+        // Android stability: Vulkan is extremely fragile on Adreno/Qualcomm (Poco/Xiaomi).
+        // GLES is universally stable and thus our default.
+        backends = wgpu::Backends::GL;
+
+        if let Some(hint) = device_hint {
+            let hint_lower = hint.to_lowercase();
+            // Whitelist Pixels/Google devices (Tensor G4 for the demo prototype) for modern Vulkan support.
+            if hint_lower.contains("pixel") || hint_lower.contains("google") || hint_lower.contains("tensor") {
+                log::info!("High-compliance hardware detected ({}): enabling Vulkan.", hint);
+                backends = wgpu::Backends::all();
+            } else {
+                log::info!("Android hardware ({}) detected: defaulting to stable GLES path.", hint);
+            }
+        }
+    }
+
     WgpuConfiguration {
         wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(
             eframe::egui_wgpu::WgpuSetupCreateNew {
+                instance_descriptor: wgpu::InstanceDescriptor {
+                    backends,
+                    ..Default::default()
+                },
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 device_descriptor: Arc::new(|adapter: &Adapter| wgpu::DeviceDescriptor {
                     label: Some("egui+burn"),
                     required_features: adapter
                         .features()
-                        .difference(Features::MAPPABLE_PRIMARY_BUFFERS),
+                        .difference(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
                     required_limits: adapter.limits(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: wgpu::Trace::Off,
