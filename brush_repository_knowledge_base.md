@@ -16,10 +16,11 @@ The repository is a hybrid workspace bridging an Android application and a highl
 
 ### A. The Core UI Layer (`crates/brush-ui`)
 - **Location:** `crates/brush-ui/src/scene.rs`
-- **Purpose:** Acts as the primary interaction canvas. It uses a consolidated **"One Train Process"** model.
+- **Purpose:** Acts as the primary interaction canvas.
 - **Mechanics:** 
-  - Instead of individual stage buttons, the UI focuses on a global **"Train"** action (`process.call_platform_action("run_train")`).
-  - Implements a unified status listener that polls `tokio::mpsc` queues to provide real-time updates from the native training stages.
+  - Implements a multi-step data selection workflow: **MP4**, **CSV**, and **Config**.
+  - Provides dual-mode **Extraction** (Uniform vs. Telemetry-based) and a final **Train** button.
+  - Implements a unified status listener that polls `tokio::mpsc` queues to provide real-time updates from the background processing stages.
 
 ### B. The JNI Translation API (`crates/brush-app/src/android.rs`)
 - **Purpose:** The glue binding the Rust frontend with the Android operating system.
@@ -31,9 +32,9 @@ The repository is a hybrid workspace bridging an Android application and a highl
 - **Location:** `crates/brush-app/app/src/main/java/com/splats/app/`
 - **MainActivity.java**: Orchestrates library loading and handles the high-level response from the native pipeline.
 - **TelemetrySparseReconstruction.java**: 
-  - **The JNI Bridge:** No longer contains SfM logic. It is strictly responsible for preparing input payloads (JSON-serialized frames, GPS priors, and IMU deltas).
+  - **The Orchestrator:** Prepares the full input payload (frames, intrinsics, GPS, IMU deltas) and invokes the native SfM pipeline via `OpenCvFrontendLib`.
   - **Payload Generation:** Maps spatial priors into `gps.json` and `imu.json` formats required by the Rust core.
-- **OpenCvFrontendLib.kt**: The modern Kotlin entry point for the **Unified SfM Pipeline**. It exposes `runFullPipelineSync`, which encapsulates the entire native lifecycle from extraction to export.
+- **OpenCvFrontendLib.kt**: The JNI bridge for the **Unified SfM Pipeline**. It exposes `runFullPipelineSync`, which encapsulates the entire native lifecycle from extraction to export.
 
 ### D. The Native SfM Pipeline (`crates/brush-process`)
 - **Location:** `crates/brush-process/src/sfm/mod.rs`

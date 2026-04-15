@@ -118,6 +118,13 @@ You can now either run the project from Android Studio (Android Studio does NOT 
 adb shell am start -n com.splats.app/.MainActivity
 ```
 
+### Android Workflow
+1. **Choose MP4**: Select the drone video file.
+2. **Choose CSV**: Select the corresponding telemetry log (DJI CSV format).
+3. **Choose Config**: (Optional) Select a JSON configuration file for SfM/Training parameters.
+4. **Extract**: Choose between "Uniform" extraction or "Telemetry" based extraction.
+5. **Train**: Start the full on-device SfM and Splatting pipeline.
+
 You can also open this folder as a project in Android Studio and run things from there. Nb: Running in Android Studio does _not_ rebuild the rust code automatically.
 
 ## Benchmarks
