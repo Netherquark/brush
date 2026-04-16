@@ -2,6 +2,7 @@ package com.splats.app.telemetry
 
 import android.util.Log
 import org.apache.commons.csv.CSVFormat
+import org.apache.commons.csv.CSVParser
 import org.apache.commons.csv.CSVRecord
 import java.io.File
 import java.text.SimpleDateFormat
@@ -32,14 +33,16 @@ private object ColumnMap {
 class CsvParseContext(var targetStartUs: Long = 0L, var totalSourceRows: Int = 0, var malformedRows: Int = 0)
 
 // ─── CSV Stream Pipeline ────────────────────────────────────────────────────────
-/**
- * Single-pass streaming parser providing a safe scope for the CSV reader.
- * Pre-scans for headers (bypassing preambles), initializes commons-csv with strict config,
- * and maintains determinism using the first valid timestamp dynamically.
- */
 internal object CsvIngestParser {
     private const val TAG = "TelemetryCsv"
+    private const val MAX_INIT_BUFFER_SIZE = 5000
 
+    /**
+     * Single-pass streaming parser providing a safe scope for the CSV reader.
+     * The Reader remains open ONLY while the provided lambda evaluates the `Sequence`.
+     * Caller MUST ensure terminal evaluations (like `.toList()`) are synchronously contained
+     * before the lambda returns.
+     */
     fun <R> streamAndParse(
         file: File,
         videoFileName: String,
@@ -54,12 +57,16 @@ internal object CsvIngestParser {
             throw TelemetryError.UnsupportedFormat(label)
         }
 
-        // Bound to the entire function scope! No stream leakage allowed.
         return file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
             var headerLine: Array<String>? = null
             
-            // 1. The Seeker Logic: Consume and discard preamble until header
-            reader.mark(1024 * 64) // 64kb max lookahead for preamble checking
+            val formatBase = CSVFormat.DEFAULT.builder()
+                .setAllowMissingColumnNames(false)
+                .setIgnoreHeaderCase(true)
+                .setTrim(true)
+                .build()
+
+            // 1. Zero-Allocation Seeker: Consume lines until headers are naturally found
             while (true) {
                 val rawLine = reader.readLine() ?: break
                 val line = rawLine.trim().removePrefix("\uFEFF")
@@ -69,11 +76,12 @@ internal object CsvIngestParser {
                     || line.contains("datetime(utc)", ignoreCase = true)
                 
                 if (isHeader) {
-                    // Extract exactly what the file stated, keeping case. 
-                    // No spaces/bom trimming here; commons-csv format controls it.
-                    val cells = splitPreCheckLine(line)
-                    headerLine = cells.toTypedArray()
-                    break
+                    val parsed = CSVParser.parse(line, formatBase)
+                    val records = parsed.records
+                    if (records.isNotEmpty()) {
+                        headerLine = records.first().toList().toTypedArray()
+                        break
+                    }
                 }
             }
             
@@ -82,30 +90,26 @@ internal object CsvIngestParser {
                 throw TelemetryError.InsufficientRecords(0)
             }
 
-            // 2. Format with strict consistency protocols
-            val format = CSVFormat.DEFAULT.builder()
+            // 2. Main data tokenizer initialized dynamically 
+            val dataFormat = formatBase.builder()
                 .setHeader(*headerLine)
-                .setAllowMissingColumnNames(false)
-                .setIgnoreHeaderCase(true)
-                .setTrim(true)
                 .build()
 
-            val csvParser = format.parse(reader)
-            
-            // Build the row parser exactly using mapped names dynamically
+            val csvParser = dataFormat.parse(reader)
             val headerMap = csvParser.headerMap ?: emptyMap()
             val rowParser = buildRowParser(headerMap)
-            
+
             Log.i(TAG, "CSV headers detected successfully: ${headerLine.size} columns")
 
             val context = CsvParseContext(targetStartUs = videoStartUsFromMetadata ?: 0L)
             var baseDateUs: Long? = null
 
-            // 3. Dynamic sequence implementation
+            // 3. Dynamic sequence implementation with Peeker Buffer Constraints
             val rowSequence = sequence {
+                var initializationBuffer: MutableList<TelRow>? = mutableListOf()
+
                 for (record in csvParser) {
                     context.totalSourceRows++
-                    // Strict Leniency Rule - drop mismatched columns immediately
                     if (!record.isConsistent) {
                         Log.w(TAG, "Dropping malformed CSV row (inconsistent column size): line ${record.recordNumber}")
                         context.malformedRows++
@@ -118,32 +122,37 @@ internal object CsvIngestParser {
                         continue
                     }
 
-                    // Determine Target Start Time once statically
-                    if (baseDateUs == null && row.timestampUs > 0L) {
-                        baseDateUs = row.timestampUs
-                    }
-                    if (videoStartUsFromMetadata == null && context.targetStartUs == 0L && baseDateUs != null) {
-                        context.targetStartUs = VideoTimeExtractor.extractTargetStartUs(videoFileName, baseDateUs!!)
-                    }
-
-                    val activeFilterUs = context.targetStartUs
-                    if (activeFilterUs == 0L || row.timestampUs >= activeFilterUs) {
-                        yield(row)
+                    if (context.targetStartUs == 0L) {
+                        if (row.timestampUs > 0L) {
+                            baseDateUs = row.timestampUs
+                            context.targetStartUs = VideoTimeExtractor.extractTargetStartUs(videoFileName, baseDateUs!!)
+                            
+                            // Flush micro-buffer safely
+                            initializationBuffer?.forEach { b ->
+                                if (b.timestampUs >= context.targetStartUs) yield(b)
+                            }
+                            initializationBuffer = null
+                            
+                            if (row.timestampUs >= context.targetStartUs) yield(row)
+                        } else {
+                            initializationBuffer?.add(row)
+                            if (initializationBuffer != null && initializationBuffer!!.size > MAX_INIT_BUFFER_SIZE) {
+                                throw TelemetryError.InsufficientRecords(MAX_INIT_BUFFER_SIZE)
+                            }
+                        }
+                    } else {
+                        if (row.timestampUs >= context.targetStartUs) {
+                            yield(row)
+                        }
                     }
                 }
-            }
+            }.constrainOnce()
 
             block(context, rowSequence)
         }
     }
 
-    private fun splitPreCheckLine(line: String): List<String> {
-        // Fast split just to identify the initial header array schema
-        return line.split(',').map { it.trim().removePrefix("\"").removeSuffix("\"") }
-    }
-
     private fun buildRowParser(headerMap: Map<String, Int>): (CSVRecord) -> TelRow? {
-        // Prepare normalized mapping table 
         val normalizedHeaders = headerMap.entries.associate { (k, v) -> 
             normalizeHeader(k) to v 
         }
@@ -178,15 +187,20 @@ internal object CsvIngestParser {
         val fixTypeHeader = iFixType?.let { revMap[it] } ?: ""
 
         return { cols: CSVRecord ->
-            fun getCol(idx: Int, default: String = "0"): String {
-                return if (idx >= 0 && idx < cols.size()) {
-                    val raw = cols.get(idx).trim()
-                    if (raw.isBlank()) default else raw
-                } else default
+            fun getCol(idx: Int): String {
+                if (idx < 0 || idx >= cols.size()) throw IllegalArgumentException("Missing coordinate column index")
+                val raw = cols.get(idx).trim()
+                if (raw.isBlank()) throw IllegalArgumentException("Empty required coordinate cell")
+                return raw
             }
 
+            fun getColOrEmpty(idx: Int): String {
+                return if (idx >= 0 && idx < cols.size()) cols.get(idx).trim() else ""
+            }
+
+            // Explicit localized boundary tracking kinematics strictly
             runCatching {
-                val tsUs = parseLitchiDateTime(getCol(iTs, ""))
+                val tsUs = parseLitchiDateTime(getColOrEmpty(iTs))
                 TelRow(
                     timestampUs = tsUs,
                     lat         = getCol(iLat).toDouble(),
@@ -197,15 +211,9 @@ internal object CsvIngestParser {
                     velN        = parseSpeedMps(getCol(iVelN), velNHeader),
                     velE        = parseSpeedMps(getCol(iVelE), velEHeader),
                     velD        = parseSpeedMps(getCol(iVelD), velDHeader),
-                    hdop        = iHdop?.let {
-                        parseHdop(getCol(it), hdopHeader)
-                    } ?: 1.0,
-                    fixType     = iFixType?.let {
-                        parseFixType(getCol(it), fixTypeHeader)
-                    } ?: 3,
-                    satellites  = iSatellites?.let {
-                        getCol(it).toIntOrNull() ?: 0
-                    } ?: 0
+                    hdop        = iHdop?.let { parseHdop(getColOrEmpty(it), hdopHeader) } ?: 1.0,
+                    fixType     = iFixType?.let { parseFixType(getColOrEmpty(it), fixTypeHeader) } ?: 3,
+                    satellites  = iSatellites?.let { getColOrEmpty(it).toIntOrNull() ?: 0 } ?: 0
                 )
             }.getOrNull()
         }
