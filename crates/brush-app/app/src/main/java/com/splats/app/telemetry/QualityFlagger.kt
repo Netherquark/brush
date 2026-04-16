@@ -11,7 +11,7 @@ package com.splats.app.telemetry
  * |-----------------------|---------------------------------------|---------------------|----------------|
  * | GPS horizontal acc.   | HDOP > 5.0                            | POOR_GPS            | retain, warn   |
  * | GPS fix type          | fixType < 3D  (checked upstream)      | NO_FIX              | hard exclude   |
- * | IMU data gap          | gap > 200 ms  (set by ImuIntegrator)  | IMU_GAP             | retain, warn   |
+ * | IMU data gap          | gap > 200 ms  (set by orientation stage)| IMU_GAP            | retain, warn   |
  * | Velocity magnitude    | speed > 25 m/s                        | IMPLAUSIBLE_VELOCITY| hard exclude   |
  * | Gimbal pitch          | outside −95° to +30°                  | IMPLAUSIBLE_GIMBAL  | retain, warn   |
  * | Altitude              | enuU < 0 (negative barometric alt)    | NEGATIVE_ALTITUDE   | retain, warn   |

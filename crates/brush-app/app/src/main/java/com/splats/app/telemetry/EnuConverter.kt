@@ -29,7 +29,7 @@ internal object EnuConverter {
 
     /** Convert a list of validated [TelRow] to [TelRecord] in the ENU frame. */
     fun convert(rows: List<TelRow>): Pair<EnuOrigin, List<TelRecord>> {
-        val originRow = rows.firstOrNull { it.hdop > 0.0 && it.hdop <= MAX_HDOP_FOR_ORIGIN && it.fixType >= 3 }
+        val originRow = rows.firstOrNull { RowValidator.isGpsUsable(it) && it.hdop <= MAX_HDOP_FOR_ORIGIN }
             ?: rows.firstOrNull { it.fixType >= 3 }
             ?: throw TelemetryError.NoValidOrigin
 
@@ -52,18 +52,35 @@ internal object EnuConverter {
             val enuU = row.altM - alt0
 
             TelRecord(
+                sourceRowIndex = row.sourceRowIndex,
                 timestampUs = row.timestampUs,
                 tsAligned   = row.timestampUs, // time sync offset applied later
+                lat         = row.lat,
+                lon         = row.lon,
+                altM        = row.altM,
+                hdop        = row.hdop,
+                pitchDeg    = row.pitchDeg,
+                rollDeg     = row.rollDeg,
+                yawDeg      = row.yawDeg,
+                gimbalPitch = row.gimbalPitch,
+                gimbalYaw   = row.gimbalYaw,
+                velN        = row.velN,
+                velE        = row.velE,
+                velD        = row.velD,
+                velNFiltered = row.velN,
+                velEFiltered = row.velE,
+                velUFiltered = -row.velD,
                 enuE        = enuE,
                 enuN        = enuN,
                 enuU        = enuU,
-                headingDeg  = row.headingDeg,  // unwrapping applied by ImuIntegrator
-                gimbalPitch = row.gimbalPitch,
-                velE        = row.velE,
-                velN        = row.velN,
-                velU        = -row.velD,       // DJI velD is positive-down; flip to up
-                hdop        = row.hdop,
-                fixType     = row.fixType
+                qW          = 1.0,
+                qX          = 0.0,
+                qY          = 0.0,
+                qZ          = 0.0,
+                fixType     = row.fixType,
+                satellites  = row.satellites,
+                batteryV    = row.batteryV,
+                gpsOk       = RowValidator.isGpsUsable(row)
             )
         }
 

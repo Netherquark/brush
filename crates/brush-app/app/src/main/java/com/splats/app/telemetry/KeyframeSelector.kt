@@ -16,9 +16,6 @@ data class KeyframeSelectionConfig(
     val minSpeedMs:            Double = 0.2            // below this = hovering
 )
 
-/** The telemetry condition that triggered selection of this candidate frame. */
-enum class TriggerReason { DISTANCE, YAW, PITCH, TIME_FALLBACK }
-
 /**
  * A keyframe candidate produced by [selectKeyframes].
  * After time-sync, [timestampUs] is matched to a video PTS by the Interpolator.
@@ -31,7 +28,7 @@ data class KeyframeCandidate(
     val yawDeg:        Double,
     val gimbalPitch:   Double,
     val speedMs:       Double,
-    val triggerReason: TriggerReason
+    val triggerReason: KeyframeTrigger
 )
 
 // ─── Selector ─────────────────────────────────────────────────────────────────
@@ -45,51 +42,50 @@ data class KeyframeCandidate(
  *  - A row is selected when *any* of the following exceeds its threshold since
  *    the last selected row: GPS distance, yaw change, gimbal pitch change, elapsed time.
  *  - The first matching threshold in the `when` expression determines the
- *    reported [TriggerReason].
+ *    reported [KeyframeTrigger].
  *
  * Complexity: O(N) — 6 trig ops per row for Haversine, all other ops O(1).
  */
 fun selectKeyframes(
-    rows: List<TelRow>,
+    rows: List<TelRecord>,
     config: KeyframeSelectionConfig = KeyframeSelectionConfig()
 ): List<KeyframeCandidate> {
     require(rows.isNotEmpty()) { "selectKeyframes: rows must not be empty" }
+    val maxKeyframes = 100
 
     val keyframes = mutableListOf<KeyframeCandidate>()
     var lastLat        = rows.first().lat
     var lastLon        = rows.first().lon
-    var lastYaw        = rows.first().headingDeg
+    var lastYaw        = rows.first().yawDeg
     var lastPitch      = rows.first().gimbalPitch
     var lastKeyframeUs = rows.first().timestampUs
 
-    // Always select the first row.
     keyframes += KeyframeCandidate(
         rowIndex      = 0,
         timestampUs   = rows.first().timestampUs,
         lat           = rows.first().lat,
         lon           = rows.first().lon,
-        yawDeg        = rows.first().headingDeg,
+        yawDeg        = rows.first().yawDeg,
         gimbalPitch   = rows.first().gimbalPitch,
         speedMs       = 0.0,
-        triggerReason = TriggerReason.TIME_FALLBACK
+        triggerReason = KeyframeTrigger.FIRST
     )
 
     for ((index, row) in rows.withIndex().drop(1)) {
-        val speed = sqrt(row.velN.pow(2) + row.velE.pow(2) + row.velD.pow(2))
-
-        // Velocity gate — skip hovering / near-stationary rows.
+        if (keyframes.size >= maxKeyframes) break
+        val speed = sqrt(row.velNFiltered.pow(2) + row.velEFiltered.pow(2) + row.velUFiltered.pow(2))
         if (speed < config.minSpeedMs) continue
 
         val dist   = haversineMetres(lastLat, lastLon, row.lat, row.lon)
-        val yawD   = yawDiffDeg(lastYaw, row.headingDeg)
+        val yawD   = yawDiffDeg(lastYaw, row.yawDeg)
         val pitchD = abs(row.gimbalPitch - lastPitch)
         val timeD  = row.timestampUs - lastKeyframeUs
 
-        val reason: TriggerReason? = when {
-            dist   > config.distanceThresholdM  -> TriggerReason.DISTANCE
-            yawD   > config.yawThresholdDeg     -> TriggerReason.YAW
-            pitchD > config.pitchThresholdDeg   -> TriggerReason.PITCH
-            timeD  > config.timeThresholdUs     -> TriggerReason.TIME_FALLBACK
+        val reason: KeyframeTrigger? = when {
+            dist   >= config.distanceThresholdM  -> KeyframeTrigger.DISTANCE
+            yawD   >= config.yawThresholdDeg     -> KeyframeTrigger.YAW
+            pitchD >= config.pitchThresholdDeg   -> KeyframeTrigger.PITCH
+            timeD  >= config.timeThresholdUs     -> KeyframeTrigger.TIME
             else                                -> null
         }
 
@@ -99,14 +95,14 @@ fun selectKeyframes(
                 timestampUs   = row.timestampUs,
                 lat           = row.lat,
                 lon           = row.lon,
-                yawDeg        = row.headingDeg,
+                yawDeg        = row.yawDeg,
                 gimbalPitch   = row.gimbalPitch,
                 speedMs       = speed,
                 triggerReason = reason
             )
             lastLat        = row.lat
             lastLon        = row.lon
-            lastYaw        = row.headingDeg
+            lastYaw        = row.yawDeg
             lastPitch      = row.gimbalPitch
             lastKeyframeUs = row.timestampUs
         }
@@ -122,14 +118,10 @@ fun selectKeyframes(
  * Accurate to < 1 mm for baselines < 5 km (typical drone survey).
  */
 fun haversineMetres(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-    val R    = 6_371_000.0                          // Earth radius, metres
-    val dLat = Math.toRadians(lat2 - lat1)
-    val dLon = Math.toRadians(lon2 - lon1)
-    val lat1R = Math.toRadians(lat1)
-    val lat2R = Math.toRadians(lat2)
-    val a = sin(dLat / 2).pow(2) +
-            cos(lat1R) * cos(lat2R) * sin(dLon / 2).pow(2)
-    return R * 2 * asin(sqrt(a))
+    val latMidRad = Math.toRadians((lat1 + lat2) / 2.0)
+    val dLatM = (lat2 - lat1) * 111_320.0
+    val dLonM = (lon2 - lon1) * 111_320.0 * cos(latMidRad)
+    return sqrt(dLatM.pow(2) + dLonM.pow(2))
 }
 
 /**

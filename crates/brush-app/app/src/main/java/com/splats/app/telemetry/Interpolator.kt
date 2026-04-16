@@ -22,7 +22,7 @@ internal object Interpolator {
     fun interpolate(
         records: List<TelRecord>,
         keyframeTimestampsUs: LongArray,
-        existingFlags: IntArray   // per-record flags from ImuIntegrator (same size as records)
+        existingFlags: IntArray   // per-record flags from orientation/validation stages
     ): List<PoseStamp> {
         require(records.isNotEmpty()) { "interpolate: records must not be empty" }
 
@@ -73,11 +73,11 @@ internal object Interpolator {
         t: Double,
         flags: Int
     ): PoseStamp {
-        val headingInterp = slerpHeading(lo.headingDeg, hi.headingDeg, t)
+        val headingInterp = slerpHeading(lo.yawDeg, hi.yawDeg, t)
         val hdop          = maxOf(lo.hdop, hi.hdop)   // take the worse value
-        val covPosition   = hdop * if (flags and QualityFlag.POOR_GPS != 0) 2.5 else 1.5
+        val covPosition   = hdop * if (flags and QualityFlag.POOR_GPS != 0) 2.5 else if (lo.isInterpolated || hi.isInterpolated) 4.0 else 1.5
 
-        val resultFlags   = if (lo.headingDeg != hi.headingDeg)
+        val resultFlags   = if (lo.yawDeg != hi.yawDeg)
             flags or QualityFlag.HEADING_INTERPOLATED
         else
             flags
@@ -90,13 +90,18 @@ internal object Interpolator {
             enuU        = lerp(lo.enuU, hi.enuU, t),
             headingDeg  = headingInterp,
             gimbalPitch = lerp(lo.gimbalPitch, hi.gimbalPitch, t),
-            velE        = lerp(lo.velE, hi.velE, t),
-            velN        = lerp(lo.velN, hi.velN, t),
-            velU        = lerp(lo.velU, hi.velU, t),
+            velE        = lerp(lo.velEFiltered, hi.velEFiltered, t),
+            velN        = lerp(lo.velNFiltered, hi.velNFiltered, t),
+            velU        = lerp(lo.velUFiltered, hi.velUFiltered, t),
             hdop        = hdop,
             covPosition = covPosition,
             covHeading  = 2.0,   // fixed 2.0° for DJI
-            flags       = resultFlags
+            flags       = resultFlags,
+            qW          = lerp(lo.qW, hi.qW, t),
+            qX          = lerp(lo.qX, hi.qX, t),
+            qY          = lerp(lo.qY, hi.qY, t),
+            qZ          = lerp(lo.qZ, hi.qZ, t),
+            trigger     = hi.keyframeTrigger ?: lo.keyframeTrigger ?: KeyframeTrigger.TIME
         )
     }
 

@@ -463,8 +463,9 @@ public class MainActivity extends GameActivity {
             VideoFrameExtractor.Params params = new VideoFrameExtractor.Params();
             params.frameCount = cfg.frameCount;
             params.maxDecodeDimension = cfg.maxFrameDimension;
+            final boolean telemetryMode = "telemetry".equalsIgnoreCase(cfg.extractionMode);
 
-            if ("telemetry".equalsIgnoreCase(cfg.extractionMode)) {
+            if (telemetryMode) {
                 if (selectedCsvFile == null || !selectedCsvFile.exists()) {
                     runOnUiThread(() -> Toast.makeText(this, "Telemetry mode needs a CSV — choose CSV first", Toast.LENGTH_LONG).show());
                     notifyPlatformEvent("extraction_complete", "");
@@ -499,6 +500,12 @@ public class MainActivity extends GameActivity {
                 public void onFinished() {
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "Frames extracted!", Toast.LENGTH_SHORT).show());
                     notifyPlatformEvent("extraction_complete", "");
+                    if (telemetryMode) {
+                        runOnUiThread(() -> {
+                            Log.i(TAG, "Extraction complete (telemetry mode) — starting telemetry preprocess...");
+                            startTelemetryPreprocessIfReady();
+                        });
+                    }
                 }
 
                 @Override
