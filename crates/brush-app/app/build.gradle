@@ -118,6 +118,9 @@ dependencies {
     // JSON output for telemetry
     implementation "com.google.code.gson:gson:2.10.1"
 
+    // CSV parsing
+    implementation "org.apache.commons:commons-csv:1.10.0"
+
     // To use the Games Controller Library
     //implementation "androidx.games:games-controller:1.1.0"
 

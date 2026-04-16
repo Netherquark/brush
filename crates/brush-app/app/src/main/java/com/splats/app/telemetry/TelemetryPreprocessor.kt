@@ -126,12 +126,21 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             // Stage 1–2: Single-pass streaming ingest + parse (strictly Litchi)
             reportProgress(ProcessingStage.PARSING, 0.0f)
             val startUsMetadata = readVideoFileStartTimeUs(videoFile)
-            val (targetStartUs, rawRows, totalCsvRows) = CsvIngestParser.streamAndParse(
-                csvFile,
-                videoFile.name,
-                startUsMetadata
-            )
-            
+
+            var targetStartUs: Long = 0L
+            var totalCsvRows: Int = 0
+            var malformedRows: Int = 0
+            val rawRows = CsvIngestParser.streamAndParse(csvFile, videoFile.name, startUsMetadata) { context, sequence ->
+                // The sequence is strictly bound inside this closure
+                val filteredList = sequence.toList()
+                
+                targetStartUs = context.targetStartUs
+                totalCsvRows = context.totalSourceRows
+                malformedRows = context.malformedRows
+                
+                filteredList
+            }
+
             if (targetStartUs > 0L) {
                 Log.i(logTag, "Using telemetry start time ${targetStartUs}us for ${videoFile.name}")
             } else {
@@ -142,7 +151,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
 
             // Stage 3: Row validation
             val validRows    = RowValidator.validate(rawRows)
-            val rejectedRows = rawRows.size - validRows.size
+            val rejectedRows = malformedRows + (rawRows.size - validRows.size)
 
             // Stage 4: ENU conversion
             reportProgress(ProcessingStage.CONVERTING, 0.0f)

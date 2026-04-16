@@ -22,11 +22,12 @@ object KeyframePlanner {
         require(maxOutputFrames >= 1) { "maxOutputFrames must be >= 1" }
 
         val startUsMetadata = readVideoFileStartTimeUs(videoFile)
-        val (targetStartUs, rawRows, _) = CsvIngestParser.streamAndParse(
-            csvFile,
-            videoFile.name,
-            startUsMetadata
-        )
+        var targetStartUs: Long = 0L
+        val rawRows = CsvIngestParser.streamAndParse(csvFile, videoFile.name, startUsMetadata) { context, sequence ->
+            val list = sequence.toList()
+            targetStartUs = context.targetStartUs
+            list
+        }
 
         val validRows = RowValidator.validate(rawRows)
         if (validRows.isEmpty()) return longArrayOf()
