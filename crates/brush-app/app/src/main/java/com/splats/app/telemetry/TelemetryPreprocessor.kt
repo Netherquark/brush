@@ -123,28 +123,35 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             if (!csvFile.exists())   throw TelemetryError.CsvNotFound(csvFile.absolutePath)
             if (!videoFile.exists()) throw TelemetryError.VideoNotFound(videoFile.absolutePath)
 
-            // Stage 1–2: Ingest + single-pass parsing (strictly Litchi)
+            // Stage 1–2: Single-pass streaming ingest + parse (strictly Litchi)
             reportProgress(ProcessingStage.PARSING, 0.0f)
-            val (headers, dataRows) = CsvIngest.read(csvFile)
-            val parsedRows = CsvParser.parse(headers, dataRows)
-            val targetStartUs = readVideoFileStartTimeUs(videoFile)
-                ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)
+            val startUsMetadata = readVideoFileStartTimeUs(videoFile)
+
+            var targetStartUs: Long = 0L
+            var totalCsvRows: Int = 0
+            var malformedRows: Int = 0
+            val rawRows = CsvIngestParser.streamAndParse(csvFile, videoFile.name, startUsMetadata) { context, sequence ->
+                // The sequence is strictly bound inside this closure
+                val filteredList = sequence.toList()
+                
+                targetStartUs = context.targetStartUs
+                totalCsvRows = context.totalSourceRows
+                malformedRows = context.malformedRows
+                
+                filteredList
+            }
+
             if (targetStartUs > 0L) {
                 Log.i(logTag, "Using telemetry start time ${targetStartUs}us for ${videoFile.name}")
             } else {
                 Log.w(logTag, "Could not derive video start time from metadata or filename for ${videoFile.name}")
             }
-            val rawRows = if (targetStartUs > 0L) {
-                parsedRows.filter { it.timestampUs >= targetStartUs }
-            } else {
-                parsedRows
-            }
-            Log.i(logTag, "Parsed ${dataRows.size} rows, retained ${rawRows.size} after time filter.")
+            Log.i(logTag, "Parsed $totalCsvRows rows, retained ${rawRows.size} after time filter.")
             reportProgress(ProcessingStage.PARSING, 1.0f)
 
             // Stage 3: Row validation
             val validRows    = RowValidator.validate(rawRows)
-            val rejectedRows = rawRows.size - validRows.size
+            val rejectedRows = malformedRows + (rawRows.size - validRows.size)
 
             // Stage 4: ENU conversion
             reportProgress(ProcessingStage.CONVERTING, 0.0f)
@@ -212,7 +219,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             reportProgress(ProcessingStage.EMITTING, 1.0f)
 
             val report = TelemetryProcessingReport(
-                totalCsvRows = rawRows.size,
+                totalCsvRows = totalCsvRows,
                 rejectedRows = rejectedRows,
                 totalKeyframes = kfTimestampsUs.size,
                 outputFrames = qResult.retained.size,

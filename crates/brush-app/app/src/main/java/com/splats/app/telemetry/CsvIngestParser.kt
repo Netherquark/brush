@@ -1,10 +1,13 @@
 package com.splats.app.telemetry
 
+import android.util.Log
+import org.apache.commons.csv.CSVFormat
+import org.apache.commons.csv.CSVParser
+import org.apache.commons.csv.CSVRecord
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
-import android.util.Log
 
 // ─── Column name mapping ──────────────────────────────────────────────────────
 
@@ -27,21 +30,25 @@ private object ColumnMap {
     val SATELLITES   = HeaderAliases(listOf("satellites"))
 }
 
-// ─── CSV Ingest ───────────────────────────────────────────────────────────────
+class CsvParseContext(var targetStartUs: Long = 0L, var totalSourceRows: Int = 0, var malformedRows: Int = 0)
 
-/**
- * Stage 1 — Raw Ingest.
- *
- * Reads the file as a plain string matrix (rows × columns).
- * Handles UTF-8 BOM, CRLF/LF line endings, and preamble rows that appear
- * before the actual header row in older DJI firmware exports.
- *
- * No type parsing is performed here.
- */
-internal object CsvIngest {
+// ─── CSV Stream Pipeline ────────────────────────────────────────────────────────
+internal object CsvIngestParser {
     private const val TAG = "TelemetryCsv"
+    private const val MAX_INIT_BUFFER_SIZE = 5000
 
-    fun read(file: File): Pair<List<String>, List<List<String>>> {
+    /**
+     * Single-pass streaming parser providing a safe scope for the CSV reader.
+     * The Reader remains open ONLY while the provided lambda evaluates the `Sequence`.
+     * Caller MUST ensure terminal evaluations (like `.toList()`) are synchronously contained
+     * before the lambda returns.
+     */
+    fun <R> streamAndParse(
+        file: File,
+        videoFileName: String,
+        videoStartUsFromMetadata: Long?,
+        block: (CsvParseContext, Sequence<TelRow>) -> R
+    ): R {
         if (!file.exists()) throw TelemetryError.CsvNotFound(file.absolutePath)
 
         val ext = file.extension.lowercase()
@@ -49,221 +56,187 @@ internal object CsvIngest {
             val label = if (ext.isBlank()) "unknown" else ext
             throw TelemetryError.UnsupportedFormat(label)
         }
-        return readCsv(file)
-    }
 
-    private fun readCsv(file: File): Pair<List<String>, List<List<String>>> {
-        val dataRows = mutableListOf<List<String>>()
-        var headers: List<String>? = null
-        var firstNonEmpty: String? = null
+        return file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+            var headerLine: Array<String>? = null
+            
+            val formatBase = CSVFormat.DEFAULT.builder()
+                .setAllowMissingColumnNames(false)
+                .setIgnoreHeaderCase(true)
+                .setTrim(true)
+                .build()
 
-        file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+            // 1. Zero-Allocation Seeker: Consume lines until headers are naturally found
             while (true) {
                 val rawLine = reader.readLine() ?: break
-                var line = rawLine.trim()
+                val line = rawLine.trim().removePrefix("\uFEFF")
                 if (line.isEmpty()) continue
-                if (firstNonEmpty == null) {
-                    line = line.removePrefix("\uFEFF") // strip UTF-8 BOM on first line
-                    firstNonEmpty = line
-                }
 
-                // Locate the header row: first line that looks like a CSV header
-                // (contains a comma and at least one recognisable keyword).
-                if (headers == null) {
-                    if (line.contains(',') && looksLikeHeader(line)) {
-                        val headerLine = splitCsvLine(line)
-                        headers = headerLine
-                        Log.i(TAG, "CSV headers: ${headerLine.joinToString("|")}")
+                val isHeader = line.contains("latitude", ignoreCase = true) 
+                    || line.contains("datetime(utc)", ignoreCase = true)
+                
+                if (isHeader) {
+                    val parsed = CSVParser.parse(line, formatBase)
+                    val records = parsed.records
+                    if (records.isNotEmpty()) {
+                        headerLine = records.first().toList().toTypedArray()
+                        break
                     }
-                    continue
-                }
-
-                if (line.contains(',')) {
-                    dataRows += splitCsvLine(line)
                 }
             }
-        }
+            
+            if (headerLine == null) {
+                Log.e(TAG, "CSV: could not find header row. Malformed or purely preamble.")
+                throw TelemetryError.InsufficientRecords(0)
+            }
 
-        val headersFinal = headers ?: run {
-            Log.e(TAG, "CSV: could not find header row. First line: $firstNonEmpty")
-            throw TelemetryError.InsufficientRecords(0)
-        }
+            // 2. Main data tokenizer initialized dynamically 
+            val dataFormat = formatBase.builder()
+                .setHeader(*headerLine)
+                .build()
 
-        return Pair(headersFinal, dataRows)
-    }
+            val csvParser = dataFormat.parse(reader)
+            val headerMap = csvParser.headerMap ?: emptyMap()
+            val rowParser = buildRowParser(headerMap)
 
-    // A line "looks like" a CSV header if it has at least one recognisable keyword.
-    private fun looksLikeHeader(line: String): Boolean {
-        val cells = splitCsvLine(line)
-        return looksLikeHeaderCells(cells)
-    }
+            Log.i(TAG, "CSV headers detected successfully: ${headerLine.size} columns")
 
-    private fun splitCsvLine(line: String): List<String> =
-        buildList {
-            val current = StringBuilder()
-            var inQuotes = false
+            val context = CsvParseContext(targetStartUs = videoStartUsFromMetadata ?: 0L)
+            var baseDateUs: Long? = null
 
-            for (ch in line) {
-                when (ch) {
-                    '"' -> inQuotes = !inQuotes
-                    ',' -> {
-                        if (inQuotes) {
-                            current.append(ch)
+            // 3. Dynamic sequence implementation with Peeker Buffer Constraints
+            val rowSequence = sequence {
+                var initializationBuffer: MutableList<TelRow>? = mutableListOf()
+
+                for (record in csvParser) {
+                    context.totalSourceRows++
+                    if (!record.isConsistent) {
+                        Log.w(TAG, "Dropping malformed CSV row (inconsistent column size): line ${record.recordNumber}")
+                        context.malformedRows++
+                        continue
+                    }
+
+                    val row = rowParser(record)
+                    if (row == null) {
+                        context.malformedRows++
+                        continue
+                    }
+
+                    if (context.targetStartUs == 0L) {
+                        if (row.timestampUs > 0L) {
+                            baseDateUs = row.timestampUs
+                            context.targetStartUs = VideoTimeExtractor.extractTargetStartUs(videoFileName, baseDateUs!!)
+                            
+                            // Flush micro-buffer safely
+                            initializationBuffer?.forEach { b ->
+                                if (b.timestampUs >= context.targetStartUs) yield(b)
+                            }
+                            initializationBuffer = null
+                            
+                            if (row.timestampUs >= context.targetStartUs) yield(row)
                         } else {
-                            add(current.toString().trim())
-                            current.setLength(0)
+                            initializationBuffer?.add(row)
+                            if (initializationBuffer != null && initializationBuffer!!.size > MAX_INIT_BUFFER_SIZE) {
+                                throw TelemetryError.InsufficientRecords(MAX_INIT_BUFFER_SIZE)
+                            }
+                        }
+                    } else {
+                        if (row.timestampUs >= context.targetStartUs) {
+                            yield(row)
                         }
                     }
-                    else -> current.append(ch)
                 }
-            }
+            }.constrainOnce()
 
-            add(current.toString().trim())
-        }
-
-}
-
-// ─── CSV Parser ───────────────────────────────────────────────────────────────
-
-/**
- * Stage 2 — Type-safe parsing.
- *
- * Resolves Litchi header names to column indices.
- * Coerces raw strings into typed [TelRow] instances.
- * Litchi "datetime(utc)" strings are converted to microseconds since epoch.
- */
-internal object CsvParser {
-    private const val TAG = "TelemetryCsv"
-    private val filenameDateTimeRegex = Regex("""(\d{4}-\d{2}-\d{2})[ _](\d{2})[:_-](\d{2})[:_-](\d{2})""")
-    private val filenameTimeRegex = Regex("""(?<!\d)(\d{2})[:_-](\d{2})[:_-](\d{2})(?!\d)""")
-
-    fun parse(
-        headers: List<String>,
-        dataRows: List<List<String>>,
-        targetStartUs: Long = 0L
-    ): List<TelRow> {
-        Log.i(TAG, "Parse headers raw: ${headers.joinToString("|")}")
-        Log.i(TAG, "Parse headers norm: ${headers.map { normalizeHeader(it) }.joinToString("|")}")
-        return try {
-            val rows = parseInternal(headers, dataRows)
-            if (targetStartUs > 0) {
-                Log.i(TAG, "Filtering CSV to start at time $targetStartUs")
-                rows.filter { it.timestampUs >= targetStartUs }
-            } else {
-                rows
-            }
-        } catch (e: TelemetryError.InsufficientRecords) {
-            throw TelemetryError.InsufficientRecords(0)
+            block(context, rowSequence)
         }
     }
 
-    fun parseStartTimeFromFilename(filename: String, rows: List<TelRow>): Long {
-        val dateTimeMatch = filenameDateTimeRegex.find(filename)
-        if (dateTimeMatch != null) {
-            val (date, hr, min, sec) = dateTimeMatch.destructured
-            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-            sdf.timeZone = TimeZone.getTimeZone("UTC")
-            return try {
-                sdf.parse("$date $hr:$min:$sec")?.time?.times(1_000L) ?: 0L
-            } catch (e: Exception) {
-                0L
-            }
+    private fun buildRowParser(headerMap: Map<String, Int>): (CSVRecord) -> TelRow? {
+        val normalizedHeaders = headerMap.entries.associate { (k, v) -> 
+            normalizeHeader(k) to v 
         }
-
-        val baseDateUs = rows.firstOrNull { it.timestampUs > 0L }?.timestampUs ?: return 0L
-        val timeMatch = filenameTimeRegex.find(filename) ?: return 0L
-        val (hr, min, sec) = timeMatch.destructured
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-        sdf.timeZone = TimeZone.getTimeZone("UTC")
-        return try {
-            val dayStartUs = (baseDateUs / 86_400_000_000L) * 86_400_000_000L
-            val dayStart = sdf.format(java.util.Date(dayStartUs / 1_000L))
-                .substring(0, 10)
-            sdf.parse("$dayStart $hr:$min:$sec")?.time?.times(1_000L) ?: 0L
-        } catch (e: Exception) {
-            0L
-        }
-    }
-
-    private fun parseInternal(
-        headers: List<String>,
-        dataRows: List<List<String>>
-    ): List<TelRow> {
-        val lower = headers.map { normalizeHeader(it) }
 
         fun resolve(headerAliases: HeaderAliases): Int? {
             for (alias in headerAliases.aliases) {
-                val idx = lower.indexOf(normalizeHeader(alias))
-                if (idx >= 0) return idx
+                val normAlias = normalizeHeader(alias)
+                if (normalizedHeaders.containsKey(normAlias)) return normalizedHeaders[normAlias]
             }
             return null
         }
 
-        val iTs         = resolve(ColumnMap.TIMESTAMP)
-            ?: throw TelemetryError.InsufficientRecords(0)
-        val iLat        = resolve(ColumnMap.LAT)        ?: throw TelemetryError.InsufficientRecords(0)
-        val iLon        = resolve(ColumnMap.LON)        ?: throw TelemetryError.InsufficientRecords(0)
-        val iAlt        = resolve(ColumnMap.ALT)        ?: throw TelemetryError.InsufficientRecords(0)
-        val iHeading    = resolve(ColumnMap.HEADING)    ?: throw TelemetryError.InsufficientRecords(0)
+        val iTs         = resolve(ColumnMap.TIMESTAMP) ?: throw TelemetryError.InsufficientRecords(0)
+        val iLat        = resolve(ColumnMap.LAT)       ?: throw TelemetryError.InsufficientRecords(0)
+        val iLon        = resolve(ColumnMap.LON)       ?: throw TelemetryError.InsufficientRecords(0)
+        val iAlt        = resolve(ColumnMap.ALT)       ?: throw TelemetryError.InsufficientRecords(0)
+        val iHeading    = resolve(ColumnMap.HEADING)   ?: throw TelemetryError.InsufficientRecords(0)
         val iPitch      = resolve(ColumnMap.GIMBAL_PITCH)?: throw TelemetryError.InsufficientRecords(0)
-        val iVelN       = resolve(ColumnMap.VEL_N)      ?: throw TelemetryError.InsufficientRecords(0)
-        val iVelE       = resolve(ColumnMap.VEL_E)      ?: throw TelemetryError.InsufficientRecords(0)
-        val iVelD       = resolve(ColumnMap.VEL_D)      ?: throw TelemetryError.InsufficientRecords(0)
+        val iVelN       = resolve(ColumnMap.VEL_N)     ?: throw TelemetryError.InsufficientRecords(0)
+        val iVelE       = resolve(ColumnMap.VEL_E)     ?: throw TelemetryError.InsufficientRecords(0)
+        val iVelD       = resolve(ColumnMap.VEL_D)     ?: throw TelemetryError.InsufficientRecords(0)
         val iHdop       = resolve(ColumnMap.HDOP)
         val iFixType    = resolve(ColumnMap.FIX_TYPE)
         val iSatellites = resolve(ColumnMap.SATELLITES)
 
-        val altHeader = lower[iAlt]
-        val velNHeader = lower[iVelN]
-        val velEHeader = lower[iVelE]
-        val velDHeader = lower[iVelD]
-        val hdopHeader = iHdop?.let { lower[it] }
-        val fixTypeHeader = iFixType?.let { lower[it] }
+        val revMap = headerMap.entries.associate { it.value to it.key }
+        val altHeader = revMap[iAlt] ?: ""
+        val velNHeader = revMap[iVelN] ?: ""
+        val velEHeader = revMap[iVelE] ?: ""
+        val velDHeader = revMap[iVelD] ?: ""
+        val hdopHeader = iHdop?.let { revMap[it] } ?: ""
+        val fixTypeHeader = iFixType?.let { revMap[it] } ?: ""
 
-        return dataRows.mapNotNull { cols ->
+        return { cols: CSVRecord ->
+            fun getCol(idx: Int): String {
+                if (idx < 0 || idx >= cols.size()) throw IllegalArgumentException("Missing coordinate column index")
+                val raw = cols.get(idx).trim()
+                if (raw.isBlank()) throw IllegalArgumentException("Empty required coordinate cell")
+                return raw
+            }
+
+            fun getColOrEmpty(idx: Int): String {
+                return if (idx >= 0 && idx < cols.size()) cols.get(idx).trim() else ""
+            }
+
+            // Explicit localized boundary tracking kinematics strictly
             runCatching {
-                val tsUs = parseLitchiDateTime(cols.getOrElse(iTs) { "" })
+                val tsUs = parseLitchiDateTime(getColOrEmpty(iTs))
                 TelRow(
                     timestampUs = tsUs,
-                    lat         = cols.getOrElse(iLat)     { "0" }.toDouble(),
-                    lon         = cols.getOrElse(iLon)     { "0" }.toDouble(),
-                    altM        = parseAltitudeMeters(cols.getOrElse(iAlt) { "0" }, altHeader),
-                    headingDeg  = cols.getOrElse(iHeading) { "0" }.toDouble(),
-                    gimbalPitch = cols.getOrElse(iPitch)   { "0" }.toDouble(),
-                    velN        = parseSpeedMps(cols.getOrElse(iVelN) { "0" }, velNHeader),
-                    velE        = parseSpeedMps(cols.getOrElse(iVelE) { "0" }, velEHeader),
-                    velD        = parseSpeedMps(cols.getOrElse(iVelD) { "0" }, velDHeader),
-                    hdop        = iHdop?.let {
-                        parseHdop(cols.getOrElse(it) { "0" }, hdopHeader ?: "")
-                    } ?: 1.0,
-                    fixType     = iFixType?.let {
-                        parseFixType(cols.getOrElse(it) { "0" }, fixTypeHeader ?: "")
-                    } ?: 3,
-                    satellites  = iSatellites?.let {
-                        cols.getOrElse(it) { "0" }.toIntOrNull() ?: 0
-                    } ?: 0
+                    lat         = getCol(iLat).toDouble(),
+                    lon         = getCol(iLon).toDouble(),
+                    altM        = parseAltitudeMeters(getCol(iAlt), altHeader),
+                    headingDeg  = getCol(iHeading).toDouble(),
+                    gimbalPitch = getCol(iPitch).toDouble(),
+                    velN        = parseSpeedMps(getCol(iVelN), velNHeader),
+                    velE        = parseSpeedMps(getCol(iVelE), velEHeader),
+                    velD        = parseSpeedMps(getCol(iVelD), velDHeader),
+                    hdop        = iHdop?.let { parseHdop(getColOrEmpty(it), hdopHeader) } ?: 1.0,
+                    fixType     = iFixType?.let { parseFixType(getColOrEmpty(it), fixTypeHeader) } ?: 3,
+                    satellites  = iSatellites?.let { getColOrEmpty(it).toIntOrNull() ?: 0 } ?: 0
                 )
-            }.getOrNull()   // malformed rows are dropped; row validator counts them
+            }.getOrNull()
         }
     }
 
     private fun parseAltitudeMeters(raw: String, header: String): Double {
         val value = raw.toDoubleOrNull() ?: return 0.0
-        return if (header.contains("[ft]") || header.contains("_ft")) value * 0.3048 else value
+        return if (header.contains("[ft]", ignoreCase = true) || header.contains("_ft", ignoreCase = true)) 
+            value * 0.3048 else value
     }
 
     private fun parseSpeedMps(raw: String, header: String): Double {
         val value = raw.toDoubleOrNull() ?: return 0.0
-        return if (header.contains("[mph]")) value * 0.44704 else value
+        return if (header.contains("[mph]", ignoreCase = true)) value * 0.44704 else value
     }
 
     private fun parseHdop(raw: String, header: String): Double {
         val value = raw.toDoubleOrNull() ?: return 99.0
         return when {
-            header.contains("gpslevel") -> {
+            header.contains("gpslevel", ignoreCase = true) -> {
                 if (value <= 0.0) 99.0 else (6.0 - value).coerceIn(0.8, 5.0)
             }
-            header.contains("gpsnum") -> when {
+            header.contains("gpsnum", ignoreCase = true) -> when {
                 value >= 20.0 -> 0.9
                 value >= 15.0 -> 1.5
                 value >= 10.0 -> 2.5
@@ -276,7 +249,7 @@ internal object CsvParser {
 
     private fun parseFixType(raw: String, header: String): Int {
         val value = raw.toIntOrNull() ?: raw.toDoubleOrNull()?.toInt() ?: return 3
-        return if (header.contains("gpslevel")) {
+        return if (header.contains("gpslevel", ignoreCase = true)) {
             when {
                 value >= 4 -> 3
                 value >= 2 -> 2
@@ -288,12 +261,7 @@ internal object CsvParser {
         }
     }
 
-    /**
-     * Parse Litchi datetime strings of the form "2024-06-01 10:23:45.456"
-     * into microseconds since Unix epoch.
-     */
     private fun parseLitchiDateTime(raw: String): Long {
-        // Format: yyyy-MM-dd HH:mm:ss.SSS or yyyy-MM-dd HH:mm:ss
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         sdf.timeZone = TimeZone.getTimeZone("UTC")
         return try {
@@ -305,17 +273,11 @@ internal object CsvParser {
             0L
         }
     }
-}
 
-private fun looksLikeHeaderCells(cells: List<String>): Boolean {
-    val norm = cells.map { normalizeHeader(it) }
-    return norm.any { it.contains("latitude") }
-        || norm.any { it.contains("datetime(utc)") }
+    private fun normalizeHeader(raw: String): String =
+        raw.lowercase(Locale.US)
+            .replace("\uFEFF", "")
+            .replace("\"", "")
+            .replace(" ", "")
+            .trim()
 }
-
-private fun normalizeHeader(raw: String): String =
-    raw.lowercase()
-        .replace("\uFEFF", "")
-        .replace("\"", "")
-        .replace(" ", "")
-        .trim()
