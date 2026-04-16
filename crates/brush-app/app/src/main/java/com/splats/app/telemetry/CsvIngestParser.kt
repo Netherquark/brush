@@ -27,21 +27,22 @@ private object ColumnMap {
     val SATELLITES   = HeaderAliases(listOf("satellites"))
 }
 
-// ─── CSV Ingest ───────────────────────────────────────────────────────────────
-
+// ─── CSV Stream Pipeline ────────────────────────────────────────────────────────
 /**
- * Stage 1 — Raw Ingest.
- *
- * Reads the file as a plain string matrix (rows × columns).
- * Handles UTF-8 BOM, CRLF/LF line endings, and preamble rows that appear
- * before the actual header row in older DJI firmware exports.
- *
- * No type parsing is performed here.
+ * Single-pass streaming parser.
+ * Reads line by line, identifies headers, resolves columns, parses into [TelRow],
+ * and applies the timestamp filter immediately, preventing OOM on large files.
  */
-internal object CsvIngest {
+internal object CsvIngestParser {
     private const val TAG = "TelemetryCsv"
+    private val filenameDateTimeRegex = Regex("""(\d{4}-\d{2}-\d{2})[ _](\d{2})[:_-](\d{2})[:_-](\d{2})""")
+    private val filenameTimeRegex = Regex("""(?<!\d)(\d{2})[:_-](\d{2})[:_-](\d{2})(?!\d)""")
 
-    fun read(file: File): Pair<List<String>, List<List<String>>> {
+    fun streamAndParse(
+        file: File,
+        videoFileName: String,
+        videoStartUsFromMetadata: Long?
+    ): Triple<Long, List<TelRow>, Int> {
         if (!file.exists()) throw TelemetryError.CsvNotFound(file.absolutePath)
 
         val ext = file.extension.lowercase()
@@ -49,13 +50,16 @@ internal object CsvIngest {
             val label = if (ext.isBlank()) "unknown" else ext
             throw TelemetryError.UnsupportedFormat(label)
         }
-        return readCsv(file)
-    }
 
-    private fun readCsv(file: File): Pair<List<String>, List<List<String>>> {
-        val dataRows = mutableListOf<List<String>>()
         var headers: List<String>? = null
         var firstNonEmpty: String? = null
+        var parser: ((List<String>) -> TelRow?)? = null
+
+        var baseDateUs: Long? = null
+        var targetStartUs: Long? = videoStartUsFromMetadata
+
+        val rows = mutableListOf<TelRow>()
+        var dataRowsSize = 0
 
         file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
             while (true) {
@@ -67,97 +71,48 @@ internal object CsvIngest {
                     firstNonEmpty = line
                 }
 
-                // Locate the header row: first line that looks like a CSV header
-                // (contains a comma and at least one recognisable keyword).
+                // Locate the header row
                 if (headers == null) {
                     if (line.contains(',') && looksLikeHeader(line)) {
                         val headerLine = splitCsvLine(line)
                         headers = headerLine
+                        parser = buildRowParser(headerLine)
                         Log.i(TAG, "CSV headers: ${headerLine.joinToString("|")}")
                     }
                     continue
                 }
 
                 if (line.contains(',')) {
-                    dataRows += splitCsvLine(line)
+                    val cols = splitCsvLine(line)
+                    dataRowsSize++
+                    val row = parser?.invoke(cols)
+                    if (row != null) {
+                        if (baseDateUs == null && row.timestampUs > 0L) {
+                            baseDateUs = row.timestampUs
+                        }
+                        
+                        if (targetStartUs == null && baseDateUs != null) {
+                            targetStartUs = parseStartTimeFromFilename(videoFileName, baseDateUs!!)
+                        }
+
+                        val actualStartUs = targetStartUs ?: 0L
+                        if (actualStartUs == 0L || row.timestampUs >= actualStartUs) {
+                            rows.add(row)
+                        }
+                    }
                 }
             }
         }
 
-        val headersFinal = headers ?: run {
+        if (headers == null) {
             Log.e(TAG, "CSV: could not find header row. First line: $firstNonEmpty")
             throw TelemetryError.InsufficientRecords(0)
         }
 
-        return Pair(headersFinal, dataRows)
+        return Triple(targetStartUs ?: 0L, rows, dataRowsSize)
     }
 
-    // A line "looks like" a CSV header if it has at least one recognisable keyword.
-    private fun looksLikeHeader(line: String): Boolean {
-        val cells = splitCsvLine(line)
-        return looksLikeHeaderCells(cells)
-    }
-
-    private fun splitCsvLine(line: String): List<String> =
-        buildList {
-            val current = StringBuilder()
-            var inQuotes = false
-
-            for (ch in line) {
-                when (ch) {
-                    '"' -> inQuotes = !inQuotes
-                    ',' -> {
-                        if (inQuotes) {
-                            current.append(ch)
-                        } else {
-                            add(current.toString().trim())
-                            current.setLength(0)
-                        }
-                    }
-                    else -> current.append(ch)
-                }
-            }
-
-            add(current.toString().trim())
-        }
-
-}
-
-// ─── CSV Parser ───────────────────────────────────────────────────────────────
-
-/**
- * Stage 2 — Type-safe parsing.
- *
- * Resolves Litchi header names to column indices.
- * Coerces raw strings into typed [TelRow] instances.
- * Litchi "datetime(utc)" strings are converted to microseconds since epoch.
- */
-internal object CsvParser {
-    private const val TAG = "TelemetryCsv"
-    private val filenameDateTimeRegex = Regex("""(\d{4}-\d{2}-\d{2})[ _](\d{2})[:_-](\d{2})[:_-](\d{2})""")
-    private val filenameTimeRegex = Regex("""(?<!\d)(\d{2})[:_-](\d{2})[:_-](\d{2})(?!\d)""")
-
-    fun parse(
-        headers: List<String>,
-        dataRows: List<List<String>>,
-        targetStartUs: Long = 0L
-    ): List<TelRow> {
-        Log.i(TAG, "Parse headers raw: ${headers.joinToString("|")}")
-        Log.i(TAG, "Parse headers norm: ${headers.map { normalizeHeader(it) }.joinToString("|")}")
-        return try {
-            val rows = parseInternal(headers, dataRows)
-            if (targetStartUs > 0) {
-                Log.i(TAG, "Filtering CSV to start at time $targetStartUs")
-                rows.filter { it.timestampUs >= targetStartUs }
-            } else {
-                rows
-            }
-        } catch (e: TelemetryError.InsufficientRecords) {
-            throw TelemetryError.InsufficientRecords(0)
-        }
-    }
-
-    fun parseStartTimeFromFilename(filename: String, rows: List<TelRow>): Long {
+    private fun parseStartTimeFromFilename(filename: String, baseDateUs: Long): Long {
         val dateTimeMatch = filenameDateTimeRegex.find(filename)
         if (dateTimeMatch != null) {
             val (date, hr, min, sec) = dateTimeMatch.destructured
@@ -170,7 +125,7 @@ internal object CsvParser {
             }
         }
 
-        val baseDateUs = rows.firstOrNull { it.timestampUs > 0L }?.timestampUs ?: return 0L
+        if (baseDateUs == 0L) return 0L
         val timeMatch = filenameTimeRegex.find(filename) ?: return 0L
         val (hr, min, sec) = timeMatch.destructured
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
@@ -185,10 +140,7 @@ internal object CsvParser {
         }
     }
 
-    private fun parseInternal(
-        headers: List<String>,
-        dataRows: List<List<String>>
-    ): List<TelRow> {
+    private fun buildRowParser(headers: List<String>): (List<String>) -> TelRow? {
         val lower = headers.map { normalizeHeader(it) }
 
         fun resolve(headerAliases: HeaderAliases): Int? {
@@ -220,7 +172,7 @@ internal object CsvParser {
         val hdopHeader = iHdop?.let { lower[it] }
         val fixTypeHeader = iFixType?.let { lower[it] }
 
-        return dataRows.mapNotNull { cols ->
+        return { cols: List<String> ->
             runCatching {
                 val tsUs = parseLitchiDateTime(cols.getOrElse(iTs) { "" })
                 TelRow(
@@ -305,6 +257,34 @@ internal object CsvParser {
             0L
         }
     }
+    // A line "looks like" a CSV header if it has at least one recognisable keyword.
+    private fun looksLikeHeader(line: String): Boolean {
+        val cells = splitCsvLine(line)
+        return looksLikeHeaderCells(cells)
+    }
+
+    private fun splitCsvLine(line: String): List<String> =
+        buildList {
+            val current = StringBuilder()
+            var inQuotes = false
+
+            for (ch in line) {
+                when (ch) {
+                    '"' -> inQuotes = !inQuotes
+                    ',' -> {
+                        if (inQuotes) {
+                            current.append(ch)
+                        } else {
+                            add(current.toString().trim())
+                            current.setLength(0)
+                        }
+                    }
+                    else -> current.append(ch)
+                }
+            }
+
+            add(current.toString().trim())
+        }
 }
 
 private fun looksLikeHeaderCells(cells: List<String>): Boolean {

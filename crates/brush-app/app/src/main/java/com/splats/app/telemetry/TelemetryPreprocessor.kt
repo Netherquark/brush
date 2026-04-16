@@ -123,23 +123,21 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             if (!csvFile.exists())   throw TelemetryError.CsvNotFound(csvFile.absolutePath)
             if (!videoFile.exists()) throw TelemetryError.VideoNotFound(videoFile.absolutePath)
 
-            // Stage 1–2: Ingest + single-pass parsing (strictly Litchi)
+            // Stage 1–2: Single-pass streaming ingest + parse (strictly Litchi)
             reportProgress(ProcessingStage.PARSING, 0.0f)
-            val (headers, dataRows) = CsvIngest.read(csvFile)
-            val parsedRows = CsvParser.parse(headers, dataRows)
-            val targetStartUs = readVideoFileStartTimeUs(videoFile)
-                ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)
+            val startUsMetadata = readVideoFileStartTimeUs(videoFile)
+            val (targetStartUs, rawRows, totalCsvRows) = CsvIngestParser.streamAndParse(
+                csvFile,
+                videoFile.name,
+                startUsMetadata
+            )
+            
             if (targetStartUs > 0L) {
                 Log.i(logTag, "Using telemetry start time ${targetStartUs}us for ${videoFile.name}")
             } else {
                 Log.w(logTag, "Could not derive video start time from metadata or filename for ${videoFile.name}")
             }
-            val rawRows = if (targetStartUs > 0L) {
-                parsedRows.filter { it.timestampUs >= targetStartUs }
-            } else {
-                parsedRows
-            }
-            Log.i(logTag, "Parsed ${dataRows.size} rows, retained ${rawRows.size} after time filter.")
+            Log.i(logTag, "Parsed $totalCsvRows rows, retained ${rawRows.size} after time filter.")
             reportProgress(ProcessingStage.PARSING, 1.0f)
 
             // Stage 3: Row validation
@@ -212,7 +210,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             reportProgress(ProcessingStage.EMITTING, 1.0f)
 
             val report = TelemetryProcessingReport(
-                totalCsvRows = rawRows.size,
+                totalCsvRows = totalCsvRows,
                 rejectedRows = rejectedRows,
                 totalKeyframes = kfTimestampsUs.size,
                 outputFrames = qResult.retained.size,
