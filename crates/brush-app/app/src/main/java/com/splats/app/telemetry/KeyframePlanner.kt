@@ -21,8 +21,7 @@ object KeyframePlanner {
     ): LongArray {
         require(maxOutputFrames >= 1) { "maxOutputFrames must be >= 1" }
 
-        val (headers, dataRows) = CsvIngest.read(csvFile)
-        val parsedRows = CsvParser.parse(headers, dataRows)
+        val parsedRows = CsvParser.parse(csvFile)
 
         val targetStartUs = readVideoFileStartTimeUs(videoFile)
             ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)

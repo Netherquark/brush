@@ -125,8 +125,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
 
             // Stage 1–2: Ingest + single-pass parsing (strictly Litchi)
             reportProgress(ProcessingStage.PARSING, 0.0f)
-            val (headers, dataRows) = CsvIngest.read(csvFile)
-            val parsedRows = CsvParser.parse(headers, dataRows)
+            val parsedRows = CsvParser.parse(csvFile)
             val targetStartUs = readVideoFileStartTimeUs(videoFile)
                 ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)
             if (targetStartUs > 0L) {
@@ -139,7 +138,7 @@ class TelemetryPreprocessor @JvmOverloads constructor(
             } else {
                 parsedRows
             }
-            Log.i(logTag, "Parsed ${dataRows.size} rows, retained ${rawRows.size} after time filter.")
+            Log.i(logTag, "Parsed ${parsedRows.size} rows, retained ${rawRows.size} after time filter.")
             reportProgress(ProcessingStage.PARSING, 1.0f)
 
             // Stage 3: Row validation
