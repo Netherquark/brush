@@ -118,11 +118,21 @@ dependencies {
     // JSON output for telemetry
     implementation "com.google.code.gson:gson:2.10.1"
 
+    testImplementation 'junit:junit:4.13.2'
+
     // To use the Games Controller Library
     //implementation "androidx.games:games-controller:1.1.0"
 
     // To use the Games Text Input Library
     //implementation "androidx.games:games-text-input:1.1.0"
+}
+
+// Some tooling still tries to run the plain-Java `unitTestClasses` task.
+// Android Gradle Plugin doesn't define it, so provide a compatibility alias.
+tasks.register("unitTestClasses") {
+    group = "verification"
+    description = "Compatibility alias for Android unit test compilation/execution."
+    dependsOn("testDebugUnitTest")
 }
 
 def ndkHostTag(File ndkDir) {

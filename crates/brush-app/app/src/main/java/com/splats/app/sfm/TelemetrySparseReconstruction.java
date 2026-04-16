@@ -211,6 +211,24 @@ public final class TelemetrySparseReconstruction {
     }
 
     private static CameraPose buildCameraPose(PoseStamp record) {
+        double qNorm = Math.sqrt(
+                record.getQW() * record.getQW()
+                        + record.getQX() * record.getQX()
+                        + record.getQY() * record.getQY()
+                        + record.getQZ() * record.getQZ()
+        );
+        if (Math.abs(qNorm - 1.0) < 1e-3) {
+            double[][] rotation = quaternionToRotation(record.getQW(), record.getQX(), record.getQY(), record.getQZ());
+            double[] cameraCenter = new double[]{
+                    record.getEnuE(),
+                    record.getEnuN(),
+                    record.getEnuU()
+            };
+            double[] translation = scale(matVecMul(rotation, cameraCenter), -1.0);
+            double[] axisAngle = rotationMatrixToAxisAngle(rotation);
+            return new CameraPose(rotation, translation, axisAngle, cameraCenter);
+        }
+
         double headingRad = Math.toRadians(record.getHeadingDeg());
         double pitchRad = Math.toRadians(record.getGimbalPitch());
 
@@ -240,6 +258,26 @@ public final class TelemetrySparseReconstruction {
         double[] axisAngle = rotationMatrixToAxisAngle(rotation);
 
         return new CameraPose(rotation, translation, axisAngle, cameraCenter);
+    }
+
+    private static double[][] quaternionToRotation(double w, double x, double y, double z) {
+        return new double[][]{
+                {
+                        1.0 - 2.0 * (y * y + z * z),
+                        2.0 * (x * y - z * w),
+                        2.0 * (x * z + y * w)
+                },
+                {
+                        2.0 * (x * y + z * w),
+                        1.0 - 2.0 * (x * x + z * z),
+                        2.0 * (y * z - x * w)
+                },
+                {
+                        2.0 * (x * z - y * w),
+                        2.0 * (y * z + x * w),
+                        1.0 - 2.0 * (x * x + y * y)
+                }
+        };
     }
 
     private static double[] rotationMatrixToAxisAngle(double[][] rotation) {

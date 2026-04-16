@@ -2,57 +2,95 @@ package com.splats.app.telemetry
 
 import java.io.File
 
-// ─── Raw Telemetry Row (internal, pre-ENU conversion) ────────────────────────
-
 data class TelRow(
-    val timestampUs: Long,      // microseconds since epoch (UTC)
-    val lat:         Double,    // WGS84 latitude, degrees
-    val lon:         Double,    // WGS84 longitude, degrees
-    val altM:        Double,    // barometric altitude, metres AGL
-    val headingDeg:  Double,    // compass heading, degrees CW from North [0, 360)
-    val gimbalPitch: Double,    // degrees; nadir = -90
-    val velN:        Double,    // velocity North, m/s
-    val velE:        Double,    // velocity East, m/s
-    val velD:        Double,    // velocity Down, m/s (positive = descending)
-    val hdop:        Double,    // horizontal dilution of precision
-    val fixType:     Int,       // 0=no fix, 2=2D, 3=3D, 4=3D+DGPS
-    val satellites:  Int
+    val sourceRowIndex: Int,
+    val timestampUs:    Long,
+    val lat:            Double,
+    val lon:            Double,
+    val altM:           Double,
+    val hdop:           Double,
+    val pitchDeg:       Double,
+    val rollDeg:        Double,
+    val yawDeg:         Double,
+    val gimbalPitch:    Double,
+    val gimbalYaw:      Double,
+    val velN:           Double,
+    val velE:           Double,
+    val velD:           Double,
+    val fixType:        Int,
+    val satellites:     Int,
+    val batteryV:       Double? = null
 )
-
-// ─── ENU-converted, validated record ─────────────────────────────────────────
 
 data class TelRecord(
-    val timestampUs: Long,      // before time sync
-    val tsAligned:   Long,      // after time sync offset applied
-    val enuE:        Double,    // East metres from origin
-    val enuN:        Double,    // North metres from origin
-    val enuU:        Double,    // Up metres from origin
-    val headingDeg:  Double,    // unwrapped, degrees CW from North
-    val gimbalPitch: Double,    // degrees; nadir = -90
-    val velE:        Double,    // m/s
-    val velN:        Double,    // m/s
-    val velU:        Double,    // m/s (positive = ascending)
-    val hdop:        Double,
-    val fixType:     Int
+    val sourceRowIndex: Int,
+    val timestampUs:    Long,
+    val tsAligned:      Long,
+    val lat:            Double,
+    val lon:            Double,
+    val altM:           Double,
+    val hdop:           Double,
+    val pitchDeg:       Double,
+    val rollDeg:        Double,
+    val yawDeg:         Double,
+    val gimbalPitch:    Double,
+    val gimbalYaw:      Double,
+    val velN:           Double,
+    val velE:           Double,
+    val velD:           Double,
+    val velNFiltered:   Double,
+    val velEFiltered:   Double,
+    val velUFiltered:   Double,
+    val enuE:           Double,
+    val enuN:           Double,
+    val enuU:           Double,
+    val qW:             Double,
+    val qX:             Double,
+    val qY:             Double,
+    val qZ:             Double,
+    val fixType:        Int,
+    val satellites:     Int,
+    val batteryV:       Double? = null,
+    val gpsOk:          Boolean = true,
+    val imuGapFlag:     Boolean = false,
+    val isInterpolated: Boolean = false,
+    val keyframeTrigger: KeyframeTrigger? = null,
+    val flags:          Int = QualityFlag.CLEAN
 )
 
-// ─── Per-keyframe output record ───────────────────────────────────────────────
-
 data class PoseStamp(
-    val frameIndex:  Int,       // index into the keyframe sequence
-    val ptsUs:       Long,      // video PTS in microseconds
-    val enuE:        Double,    // East metres
-    val enuN:        Double,    // North metres
-    val enuU:        Double,    // Up metres
-    val headingDeg:  Double,    // degrees CW from North
-    val gimbalPitch: Double,    // degrees
-    val velE:        Double,    // m/s
-    val velN:        Double,    // m/s
-    val velU:        Double,    // m/s
+    val frameIndex:  Int,
+    val ptsUs:       Long,
+    val enuE:        Double,
+    val enuN:        Double,
+    val enuU:        Double,
+    val headingDeg:  Double,
+    val gimbalPitch: Double,
+    val velE:        Double,
+    val velN:        Double,
+    val velU:        Double,
     val hdop:        Double,
-    val covPosition: Double,    // position uncertainty radius, metres
-    val covHeading:  Double,    // heading uncertainty, degrees (2.0° fixed for DJI)
-    val flags:       Int        // bitmask — see QualityFlag
+    val covPosition: Double,
+    val covHeading:  Double,
+    val flags:       Int,
+    val qW:          Double = 1.0,
+    val qX:          Double = 0.0,
+    val qY:          Double = 0.0,
+    val qZ:          Double = 0.0,
+    val trigger:     KeyframeTrigger = KeyframeTrigger.TIME
+)
+
+enum class KeyframeTrigger { FIRST, DISTANCE, YAW, PITCH, TIME }
+
+data class TelemetryDiagnostics(
+    val totalRecords: Int,
+    val gpsValidPct: Double,
+    val imuGapCount: Int,
+    val keyframeCount: Int,
+    val syncOffsetUs: Long,
+    val syncConfidence: Double,
+    val warnings: List<String>,
+    val okToProceed: Boolean
 )
 
 // ─── Quality flags as bitmask constants ──────────────────────────────────────
@@ -84,12 +122,13 @@ data class EnuOrigin(
 
 data class PoseStampSequence(
     val origin:       EnuOrigin,
-    val timeOffsetUs: Long,             // Δt from time sync, microseconds
+    val timeOffsetUs: Long,
     val records:      List<PoseStamp>,
-    val sourceMode:   TelemetryMode,    // always MODE_C in this module
+    val sourceMode:   TelemetryMode,
     val logPath:      File,
     val videoPath:    File,
-    val createdAt:    Long              // System.currentTimeMillis()
+    val createdAt:    Long,
+    val diagnostics:  TelemetryDiagnostics? = null
 )
 
 enum class TelemetryMode { MODE_A, MODE_B, MODE_C }
@@ -107,14 +146,19 @@ data class TelemetryProcessingReport(
     val syncCorrelation:  Double,       // 0.0–1.0; > 0.6 required
     val origin:           EnuOrigin,
     val processingTimeMs: Long,
-    val warnings:         List<String>
+    val warnings:         List<String>,
+    val gpsValidPct:      Double = 0.0,
+    val imuGapCount:      Int = 0,
+    val okToProceed:      Boolean = true
 )
 
 // ─── Processing stages ────────────────────────────────────────────────────────
 
 enum class ProcessingStage(val label: String) {
     PARSING("Parsing CSV"),
+    VALIDATING("Validating telemetry"),
     CONVERTING("Converting coordinates"),
+    ORIENTING("Fusing orientation"),
     SYNCING("Synchronising timelines"),
     INTERPOLATING("Interpolating poses"),
     FLAGGING("Applying quality gates"),

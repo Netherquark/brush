@@ -22,19 +22,20 @@ object KeyframePlanner {
         require(maxOutputFrames >= 1) { "maxOutputFrames must be >= 1" }
 
         val parsedRows = CsvParser.parse(csvFile)
-
         val targetStartUs = readVideoFileStartTimeUs(videoFile)
             ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)
-        val rawRows = if (targetStartUs > 0L) {
+        val clippedRows = if (targetStartUs > 0L) {
             parsedRows.filter { it.timestampUs >= targetStartUs }
         } else {
             parsedRows
         }
 
-        val validRows = RowValidator.validate(rawRows)
-        if (validRows.isEmpty()) return longArrayOf()
+        val validated = RowValidator.validate(clippedRows)
+        if (validated.rows.isEmpty()) return longArrayOf()
+        val (_, enuRecords) = EnuConverter.convert(validated.rows)
+        val oriented = OrientationFusionEngine.process(GapInterpolator.interpolate(enuRecords)).records
 
-        val cands = selectKeyframes(validRows, config)
+        val cands = selectKeyframes(oriented, config)
         val rel = LongArray(cands.size) { i ->
             (cands[i].timestampUs - targetStartUs).coerceAtLeast(0L)
         }

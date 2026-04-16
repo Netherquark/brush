@@ -15,14 +15,21 @@ import android.util.Log
 internal object RowValidator {
     private const val TAG = "TelemetryRows"
 
-    fun validate(rows: List<TelRow>): List<TelRow> {
+    data class Result(
+        val rows: List<TelRow>,
+        val rejectedCount: Int,
+        val gpsValidPct: Double,
+        val imuGapCount: Int,
+        val warnings: List<String>
+    )
+
+    fun validate(rows: List<TelRow>): Result {
         if (rows.isEmpty()) throw TelemetryError.InsufficientRecords(0)
 
-        // Some DJI exports arrive newest-first. Validate against timestamp order
-        // instead of rejecting an otherwise valid descending log wholesale.
         val orderedRows = rows.sortedBy { it.timestampUs }
         val valid = mutableListOf<TelRow>()
         var prevTimestamp = Long.MIN_VALUE
+        var imuGapCount = 0
         val rejectionCounts = linkedMapOf(
             "non_finite_lat_lon" to 0,
             "lat_out_of_range" to 0,
@@ -39,17 +46,24 @@ internal object RowValidator {
                 rejectionCounts[rejection] = rejectionCounts.getValue(rejection) + 1
                 continue
             }
+            if (prevTimestamp != Long.MIN_VALUE && row.timestampUs - prevTimestamp > 200_000L) {
+                imuGapCount++
+            }
             valid += row
             prevTimestamp = row.timestampUs
         }
 
         val rejectedCount = orderedRows.size - valid.size
         val rejectedPct   = rejectedCount.toDouble() / orderedRows.size * 100.0
+        val gpsValidCount = valid.count { isGpsUsable(it) }
+        val gpsValidPct = if (valid.isEmpty()) 0.0 else gpsValidCount.toDouble() / valid.size * 100.0
+        val warnings = mutableListOf<String>()
         if (rejectedCount > 0) {
             val summary = rejectionCounts.entries
                 .filter { it.value > 0 }
                 .joinToString(", ") { "${it.key}=${it.value}" }
             Log.i(TAG, "Validated ${valid.size}/${orderedRows.size} telemetry rows; rejected: $summary")
+            warnings += "Rejected $rejectedCount row(s): $summary"
         }
 
         if (rejectedPct > 20.0) {
@@ -62,20 +76,31 @@ internal object RowValidator {
             throw TelemetryError.NoGpsFix
         }
 
-        return valid
+        return Result(
+            rows = valid,
+            rejectedCount = rejectedCount,
+            gpsValidPct = gpsValidPct,
+            imuGapCount = imuGapCount,
+            warnings = warnings
+        )
     }
 
     private fun rejectionReason(row: TelRow, prevTimestamp: Long): String? {
-        // Latitude and longitude range checks
         if (!row.lat.isFinite() || !row.lon.isFinite()) return "non_finite_lat_lon"
         if (row.lat < -90.0 || row.lat > 90.0) return "lat_out_of_range"
         if (row.lon < -180.0 || row.lon > 180.0) return "lon_out_of_range"
-        // Altitude plausibility (barometric AGL)
         if (!row.altM.isFinite()) return "non_finite_alt"
         if (row.altM < -50.0 || row.altM > 6000.0) return "alt_out_of_range"
-        // Timestamp must be positive and monotonically increasing
         if (row.timestampUs <= 0L) return "timestamp_non_positive"
         if (row.timestampUs <= prevTimestamp) return "timestamp_non_increasing"
         return null
     }
+
+    fun isGpsUsable(row: TelRow): Boolean =
+        !(row.lat == 0.0 && row.lon == 0.0) &&
+            row.lat.isFinite() &&
+            row.lon.isFinite() &&
+            row.altM.isFinite() &&
+            row.fixType >= 3 &&
+            (row.hdop <= 0.0 || row.hdop <= 3.0)
 }
