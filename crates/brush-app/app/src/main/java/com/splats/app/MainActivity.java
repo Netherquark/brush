@@ -120,8 +120,9 @@ public class MainActivity extends GameActivity {
         }
         instance.runOnUiThread(() -> {
             Log.i(TAG, "runTrain from Rust. Config: " + configJson);
-            instance.applyPipelineConfigJson(configJson != null ? configJson : "{}");
-            instance.startTelemetryPreprocessIfReady();
+            String merged = instance.getMergedConfigJson(configJson);
+            instance.applyPipelineConfigJson(merged);
+            instance.startTelemetryPreprocessIfReady(merged);
         });
     }
 
@@ -344,7 +345,33 @@ public class MainActivity extends GameActivity {
         super.onActivityResult(requestCode, resultCode, data);
     }
 
-    private void startTelemetryPreprocessIfReady() {
+    private String getMergedConfigJson(String uiJson) {
+        try {
+            JSONObject merged = new JSONObject();
+            if (selectedConfigFile != null && selectedConfigFile.exists()) {
+                try {
+                    java.nio.file.Path p = selectedConfigFile.toPath();
+                    String fileStr = new String(java.nio.file.Files.readAllBytes(p));
+                    merged = new JSONObject(fileStr);
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed reading config file base", e);
+                }
+            }
+            if (uiJson != null && !uiJson.trim().isEmpty() && !uiJson.equals("{}")) {
+                JSONObject uiObj = new JSONObject(uiJson);
+                java.util.Iterator<String> keys = uiObj.keys();
+                while(keys.hasNext()) {
+                    String key = keys.next();
+                    merged.put(key, uiObj.get(key));
+                }
+            }
+            return merged.toString();
+        } catch (JSONException e) {
+            return "{}";
+        }
+    }
+
+    private void startTelemetryPreprocessIfReady(String mergedConfigJsonStr) {
         if (telemetryRunning) return;
         if (selectedVideoFile == null || !selectedVideoFile.exists()) {
             Toast.makeText(this, "Pick an MP4 before training", Toast.LENGTH_SHORT).show();
@@ -358,17 +385,6 @@ public class MainActivity extends GameActivity {
         }
 
         cleanupTelemetryOutputs();
-
-        String configJsonStr = "{}";
-        if (selectedConfigFile != null && selectedConfigFile.exists()) {
-            try {
-                java.nio.file.Path p = selectedConfigFile.toPath();
-                configJsonStr = new String(java.nio.file.Files.readAllBytes(p));
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to read config file", e);
-            }
-        }
-        final String finalConfigJsonStr = configJsonStr;
 
         telemetryRunning = true;
         Toast.makeText(this, "Starting telemetry preprocess...", Toast.LENGTH_SHORT).show();
@@ -404,7 +420,7 @@ public class MainActivity extends GameActivity {
 
                         notifyPlatformEvent("telemetry_complete", plyFile.getAbsolutePath());
 
-                        backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile, finalConfigJsonStr));
+                        backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile, mergedConfigJsonStr));
 
                         Toast.makeText(
                                 MainActivity.this,
@@ -440,7 +456,7 @@ public class MainActivity extends GameActivity {
                         keyframeSelectionConfig,
                         outDir,
                         sessionId,
-                        finalConfigJsonStr
+                        mergedConfigJsonStr
                 );
         telemetryPreprocessor.start(telemetryScope);
     }
@@ -453,7 +469,8 @@ public class MainActivity extends GameActivity {
 
     private void extractFramesFromSelectedVideo(String json) {
         backgroundExecutor.execute(() -> {
-            PipelineConfig cfg = PipelineConfig.parse(json);
+            String mergedJson = getMergedConfigJson(json);
+            PipelineConfig cfg = PipelineConfig.parse(mergedJson);
             if (selectedVideoFile == null || !selectedVideoFile.exists()) {
                 runOnUiThread(() -> Toast.makeText(this, "Choose an MP4 first", Toast.LENGTH_SHORT).show());
                 notifyPlatformEvent("extraction_complete", "");
@@ -503,7 +520,7 @@ public class MainActivity extends GameActivity {
                     if (telemetryMode) {
                         runOnUiThread(() -> {
                             Log.i(TAG, "Extraction complete (telemetry mode) — starting telemetry preprocess...");
-                            startTelemetryPreprocessIfReady();
+                            startTelemetryPreprocessIfReady(mergedJson);
                         });
                     }
                 }
