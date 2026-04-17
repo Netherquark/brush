@@ -24,7 +24,7 @@ mod settings_popup;
 use eframe::egui_wgpu::WgpuConfiguration;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
-use wgpu::{Adapter, Features};
+use wgpu::Adapter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[wasm_bindgen]
@@ -43,7 +43,11 @@ pub fn create_egui_options() -> WgpuConfiguration {
 }
 
 pub fn create_egui_options_with_hints(device_hint: Option<&str>) -> WgpuConfiguration {
-    let mut backends = wgpu::Backends::all();
+    #[cfg(not(target_os = "android"))]
+    let backends = wgpu::Backends::all();
+
+    #[cfg(target_os = "android")]
+    let mut backends = wgpu::Backends::GL;
 
     #[cfg(target_os = "android")]
     {

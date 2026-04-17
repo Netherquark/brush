@@ -27,12 +27,28 @@ interface TelemetryPreprocessorCallback {
 }
 
 private object HardwareTier {
-    fun isFlagship(): Boolean = try {
-        val cpuInfo = File("/proc/cpuinfo").readText()
-        listOf("SM8550", "SM8650", "SM8750", "Kona", "Taro")
-            .any { cpuInfo.contains(it, ignoreCase = true) }
-    } catch (_: Exception) {
-        Runtime.getRuntime().availableProcessors() >= 8
+    fun isFlagship(): Boolean {
+        return try {
+            val soc = if (android.os.Build.VERSION.SDK_INT >= 31) {
+                android.os.Build.SOC_MODEL
+            } else {
+                android.os.Build.HARDWARE
+            }
+            
+            val cpuInfo = File("/proc/cpuinfo").readText().lowercase()
+            val flagshipStrings = listOf(
+                "sm8550", "sm8650", "sm8750", "kona", "taro", // Qualcomm
+                "tensor", "gs101", "gs201", "gs301",          // Google
+                "mt68", "mt69", "dimensity",                  // MediaTek
+                "exynos"                                      // Exynos
+            )
+            
+            flagshipStrings.any { 
+                soc.lowercase().contains(it) || cpuInfo.contains(it)
+            }
+        } catch (_: Exception) {
+            Runtime.getRuntime().availableProcessors() >= 8
+        }
     }
 
     fun timeoutMs(): Long = if (isFlagship()) 90_000L else 180_000L
