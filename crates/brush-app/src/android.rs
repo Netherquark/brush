@@ -11,9 +11,29 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jni::sys::
 
     let mut env = vm_ref.get_env().expect("Cannot get JNIEnv");
     let class = env.find_class("com/splats/app/MainActivity").expect("Failed to find MainActivity");
-    *MAIN_ACTIVITY_CLASS.write().unwrap() = Some(env.new_global_ref(class).unwrap());
+    *MAIN_ACTIVITY_CLASS.write().unwrap() = Some(env.new_global_ref(&class).unwrap());
+
+    // Cache method IDs
+    let mut cache = JNI_METHOD_CACHE.write().unwrap();
+    cache.choose_mp4 = env.get_static_method_id(&class, "chooseMp4", "()V").ok();
+    cache.extract_frames = env.get_static_method_id(&class, "extractFrames", "(Ljava/lang/String;)V").ok();
+    cache.choose_csv = env.get_static_method_id(&class, "chooseCsv", "()V").ok();
+    cache.choose_config = env.get_static_method_id(&class, "chooseConfig", "()V").ok();
+    cache.run_train = env.get_static_method_id(&class, "runTrain", "(Ljava/lang/String;)V").ok();
+    cache.get_device_model = env.get_static_method_id(&class, "getDeviceModel", "()Ljava/lang/String;").ok();
 
     jni::sys::JNI_VERSION_1_6
+}
+
+macro_rules! jni_guard {
+    ($env:expr, $block:block) => {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            $block
+        })).unwrap_or_else(|_| {
+            let _ = $env.throw_new("java/lang/RuntimeException", "Native panic in Rust core (android.rs)");
+            // Return a default value if necessary, or just rely on the JVM handling the exception
+        })
+    };
 }
 
 use lazy_static::lazy_static;
@@ -23,6 +43,17 @@ lazy_static! {
         RwLock::new(None);
     static ref MAIN_ACTIVITY_CLASS: RwLock<Option<jni::objects::GlobalRef>> =
         RwLock::new(None);
+    static ref JNI_METHOD_CACHE: RwLock<JniMethodCache> = RwLock::new(JniMethodCache::default());
+}
+
+#[derive(Default)]
+struct JniMethodCache {
+    choose_mp4: Option<jni::objects::JStaticMethodID>,
+    extract_frames: Option<jni::objects::JStaticMethodID>,
+    choose_csv: Option<jni::objects::JStaticMethodID>,
+    choose_config: Option<jni::objects::JStaticMethodID>,
+    run_train: Option<jni::objects::JStaticMethodID>,
+    get_device_model: Option<jni::objects::JStaticMethodID>,
 }
 
 #[unsafe(no_mangle)]
@@ -32,40 +63,54 @@ pub unsafe extern "system" fn Java_com_splats_app_MainActivity_notifyPlatformEve
     event_type: jni::objects::JString<'local>,
     data: jni::objects::JString<'local>,
 ) {
-    let event_type: String = env.get_string(&event_type).unwrap().into();
-    let data: String = env.get_string(&data).unwrap().into();
+    jni_guard!(env, {
+        let event_type_jstr: jni::objects::JString = event_type.into();
+        let data_jstr: jni::objects::JString = data.into();
 
-    log::info!("Platform event: {} data: {}", event_type, data);
+        let event_type_raw = match env.get_string(&event_type_jstr) {
+            Ok(s) => s,
+            Err(_) => return, // Return silently as exception is likely pending
+        };
+        let data_raw = match env.get_string(&data_jstr) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
 
-    let event = if event_type.ends_with("_picked") {
-        let name = std::path::Path::new(&data)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file")
-            .to_string();
-        brush_ui::ui_process::PlatformEvent::FileSelected {
-            event_type,
-            path: data,
-            name,
-        }
-    } else if event_type.starts_with("progress:") {
-        let name = event_type.strip_prefix("progress:").unwrap().to_string();
-        let val: f32 = data.parse().unwrap_or(0.0);
-        brush_ui::ui_process::PlatformEvent::Progress {
-            event_type: name,
-            progress: val,
-        }
-    } else {
-        brush_ui::ui_process::PlatformEvent::ProcessComplete {
-            event_type,
-            success: true,
-            data,
-        }
-    };
+        let event_type: String = event_type_raw.into();
+        let data: String = data_raw.into();
 
-    if let Some(sender) = PLATFORM_EVENT_SENDER.read().unwrap().as_ref() {
-        let _: Result<(), _> = sender.send(event);
-    }
+        log::info!("Platform event: {} data: {}", event_type, data);
+
+        let event = if event_type.ends_with("_picked") {
+            let name = std::path::Path::new(&data)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            brush_ui::ui_process::PlatformEvent::FileSelected {
+                event_type,
+                path: data,
+                name,
+            }
+        } else if event_type.starts_with("progress:") {
+            let name = event_type.strip_prefix("progress:").unwrap_or(&event_type).to_string();
+            let val: f32 = data.parse().unwrap_or(0.0);
+            brush_ui::ui_process::PlatformEvent::Progress {
+                event_type: name,
+                progress: val,
+            }
+        } else {
+            brush_ui::ui_process::PlatformEvent::ProcessComplete {
+                event_type,
+                success: true,
+                data,
+            }
+        };
+
+        if let Some(sender) = PLATFORM_EVENT_SENDER.read().unwrap().as_ref() {
+            let _: Result<(), _> = sender.send(event);
+        }
+    })
 }
 
 fn with_attached_env<F, R>(f: F) -> Option<R>
@@ -105,55 +150,122 @@ where
 }
 
 #[cfg(target_os = "android")]
-fn call_java_static(method: &str) {
+fn call_java_static(method_name: &str) {
     with_attached_env(|env, class| {
-        if let Err(err) = env.call_static_method(class, method, "()V", &[]) {
-            log::error!("Failed to call MainActivity.{method}(): {err:?}");
+        let method_id = {
+            let cache = JNI_METHOD_CACHE.read().unwrap();
+            match method_name {
+                "chooseMp4" => cache.choose_mp4.as_ref(),
+                "chooseCsv" => cache.choose_csv.as_ref(),
+                "chooseConfig" => cache.choose_config.as_ref(),
+                _ => None,
+            }.cloned()
+        };
+
+        let result = if let Some(mid) = method_id {
+            unsafe {
+                env.call_static_method_unchecked(
+                    class,
+                    mid,
+                    jni::signature::ReturnType::Primitive(jni::signature::Primitive::Void),
+                    &[],
+                )
+            }
+        } else {
+            env.call_static_method(class, method_name, "()V", &[])
+        };
+
+        if let Err(err) = result {
+            log::error!("Failed to call MainActivity.{method_name}(): {err:?}");
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_describe();
                 let _ = env.exception_clear();
             }
         } else {
-            log::info!("Successfully called MainActivity.{method}()");
+            log::info!("Successfully called MainActivity.{method_name}()");
         }
     });
 }
 
 #[cfg(target_os = "android")]
-fn call_java_static_string(method: &str, arg: &str) {
+fn call_java_static_string(method_name: &str, arg: &str) {
     with_attached_env(|env, class| {
         let jstr = match env.new_string(arg) {
             Ok(s) => s,
             Err(err) => {
-                log::error!("Failed to allocate jstring for MainActivity.{method}: {err:?}");
+                log::error!("Failed to allocate jstring for MainActivity.{method_name}: {err:?}");
                 return;
             }
         };
 
-        if let Err(err) = env.call_static_method(
-            class,
-            method,
-            "(Ljava/lang/String;)V",
-            &[jni::objects::JValue::Object(&jstr)],
-        ) {
-            log::error!("Failed to call MainActivity.{method}(String): {err:?}");
+        let method_id = {
+            let cache = JNI_METHOD_CACHE.read().unwrap();
+            match method_name {
+                "extractFrames" => cache.extract_frames.as_ref(),
+                "runTrain" => cache.run_train.as_ref(),
+                _ => None,
+            }.cloned()
+        };
+
+        let result = if let Some(mid) = method_id {
+            let jval = jni::objects::JValue::Object(&jstr);
+            unsafe {
+                env.call_static_method_unchecked(
+                    class,
+                    mid,
+                    jni::signature::ReturnType::Primitive(jni::signature::Primitive::Void),
+                    &[jval.as_jni()],
+                )
+            }
+        } else {
+            env.call_static_method(
+                class,
+                method_name,
+                "(Ljava/lang/String;)V",
+                &[jni::objects::JValue::Object(&jstr)],
+            )
+        };
+
+        if let Err(err) = result {
+            log::error!("Failed to call MainActivity.{method_name}(String): {err:?}");
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_describe();
                 let _ = env.exception_clear();
             }
         } else {
-            log::info!("Successfully called MainActivity.{method}(String)");
+            log::info!("Successfully called MainActivity.{method_name}(String)");
         }
     });
 }
 
 #[cfg(target_os = "android")]
-fn call_java_static_return_string(method: &str) -> Option<String> {
+fn call_java_static_return_string(method_name: &str) -> Option<String> {
     with_attached_env(|env, class| {
-        let result = match env.call_static_method(class, method, "()Ljava/lang/String;", &[]) {
+        let method_id = {
+            let cache = JNI_METHOD_CACHE.read().unwrap();
+            match method_name {
+                "getDeviceModel" => cache.get_device_model.as_ref(),
+                _ => None,
+            }.cloned()
+        };
+
+        let result = if let Some(mid) = method_id {
+            unsafe {
+                env.call_static_method_unchecked(
+                    class,
+                    mid,
+                    jni::signature::ReturnType::Object,
+                    &[],
+                )
+            }
+        } else {
+            env.call_static_method(class, method_name, "()Ljava/lang/String;", &[])
+        };
+
+        let result = match result {
             Ok(r) => r,
             Err(e) => {
-                log::error!("JNI call failed: {e:?}");
+                log::error!("JNI call failed for {method_name}: {e:?}");
                 return None;
             }
         };
