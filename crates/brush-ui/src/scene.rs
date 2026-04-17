@@ -478,6 +478,14 @@ impl ScenePanel {
                 process.call_platform_action("run_train");
                 self.telemetry_running = true;
             }
+
+            if ui
+                .add_enabled(!is_busy, button("💾 Export PLY", blue, !is_busy))
+                .clicked()
+            {
+                // Mockup button, no backend functionality
+                log::info!("Export PLY button clicked (mockup)");
+            }
         });
         
         let progress = process.platform_progress();
