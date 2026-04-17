@@ -543,6 +543,7 @@ impl ScenePanel {
                                 .clicked()
                             {
                                 load_option = Some(DataSource::Url(self.url.clone()));
+                                self.url.clear();
                                 self.show_url_dialog = false;
                             }
                             if ui.button("Cancel").clicked() {
@@ -556,6 +557,7 @@ impl ScenePanel {
                             && !is_busy
                         {
                             load_option = Some(DataSource::Url(self.url.clone()));
+                            self.url.clear();
                             self.show_url_dialog = false;
                         }
                     });
