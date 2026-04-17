@@ -272,7 +272,7 @@ internal object TimeSyncEngine {
 
     data class SyncResult(val offsetUs: Long, val correlation: Double)
 
-    fun sync(records: List<TelRecord>, videoFile: File): SyncResult {
+    suspend fun sync(records: List<TelRecord>, videoFile: File): SyncResult {
         val altCurve = extractAltitudeCurve(records)
         val videoCurve = extractVideoMotionProxy(videoFile, altCurve.size)
         if (altCurve.size < 3 || videoCurve.size < 3) return SyncResult(0L, 0.0)
@@ -311,7 +311,7 @@ internal object TimeSyncEngine {
         }
     }
 
-    private fun extractVideoMotionProxy(videoFile: File, targetLen: Int): DoubleArray {
+    private suspend fun extractVideoMotionProxy(videoFile: File, targetLen: Int): DoubleArray {
         if (targetLen <= 0) return DoubleArray(0)
         val result = DoubleArray(targetLen)
         val retriever = MediaMetadataRetriever()
@@ -320,12 +320,23 @@ internal object TimeSyncEngine {
             val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
             val sampleTimes = flowProxySampleTimesUs(durationMs).take(targetLen)
             var previous: Bitmap? = null
+            var pxA: IntArray? = null
+            var pxB: IntArray? = null
             for ((i, timeUs) in sampleTimes.withIndex()) {
+                kotlinx.coroutines.yield()
                 val current = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
                 if (previous == null) {
                     result[i] = 0.0
                 } else {
-                    result[i] = frameDelta(previous, current)
+                    val w = minOf(previous.width, current.width)
+                    val h = minOf(previous.height, current.height)
+                    val cropW = (w * 0.2).toInt().coerceAtLeast(1)
+                    val cropH = (h * 0.2).toInt().coerceAtLeast(1)
+                    val size = cropW * cropH
+                    if (pxA == null || pxA.size != size) pxA = IntArray(size)
+                    if (pxB == null || pxB.size != size) pxB = IntArray(size)
+                    
+                    result[i] = frameDelta(previous, current, pxA, pxB, w, h, cropW, cropH)
                     previous.recycle()
                 }
                 previous = current
@@ -339,15 +350,9 @@ internal object TimeSyncEngine {
         return result
     }
 
-    private fun frameDelta(a: Bitmap, b: Bitmap): Double {
-        val w = minOf(a.width, b.width)
-        val h = minOf(a.height, b.height)
+    private fun frameDelta(a: Bitmap, b: Bitmap, pxA: IntArray, pxB: IntArray, w: Int, h: Int, cropW: Int, cropH: Int): Double {
         val left = (w * 0.4).toInt()
         val top = (h * 0.4).toInt()
-        val cropW = (w * 0.2).toInt().coerceAtLeast(1)
-        val cropH = (h * 0.2).toInt().coerceAtLeast(1)
-        val pxA = IntArray(cropW * cropH)
-        val pxB = IntArray(cropW * cropH)
         a.getPixels(pxA, 0, cropW, left, top, cropW, cropH)
         b.getPixels(pxB, 0, cropW, left, top, cropW, cropH)
         var diff = 0.0
@@ -364,7 +369,7 @@ internal object TimeSyncEngine {
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
-    private fun ncc(
+    private suspend fun ncc(
         signal: DoubleArray,
         reference: DoubleArray,
         searchRangeUs: Long,
@@ -378,6 +383,7 @@ internal object TimeSyncEngine {
         var bestLag = 0
         var bestCorr = Double.NEGATIVE_INFINITY
         for (lag in -maxLag..maxLag) {
+            kotlinx.coroutines.yield()
             var sum = 0.0
             var n = 0
             for (i in sig.indices) {
