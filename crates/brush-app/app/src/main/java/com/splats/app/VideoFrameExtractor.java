@@ -90,57 +90,14 @@ public class VideoFrameExtractor {
             });
         }
 
-        final int dim = Math.max(96, Math.min(extractionParams.maxDecodeDimension, 4096));
-
         final Context appContext = context.getApplicationContext();
 
         new Thread(() -> {
             int numThreads = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
-            java.util.concurrent.ExecutorService executor = new java.util.concurrent.ThreadPoolExecutor(
-                    numThreads, numThreads,
-                    0L, java.util.concurrent.TimeUnit.MILLISECONDS,
-                    new java.util.concurrent.ArrayBlockingQueue<>(numThreads * 2),
-                    new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
-                    
             java.util.concurrent.ArrayBlockingQueue<MediaMetadataRetriever> retrievers = new java.util.concurrent.ArrayBlockingQueue<>(numThreads);
 
             try {
-                // Determine duration using a single temporary retriever
-                long durationUs = 0;
-                File outputDir = new File(appContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "extracted_frames");
-                if (!outputDir.exists()) outputDir.mkdirs();
-
-                java.util.concurrent.atomic.AtomicInteger writtenFrames = new java.util.concurrent.atomic.AtomicInteger(0);
-
-                try (MediaMetadataRetriever infoRetriever = new MediaMetadataRetriever()) {
-                    infoRetriever.setDataSource(appContext, videoUri);
-                    String durationStr = infoRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-                    if (durationStr != null) {
-                        try {
-                            durationUs = Long.parseLong(durationStr) * 1000L;
-                        } catch (NumberFormatException e) {
-                            Log.w(TAG, "Invalid duration metadata", e);
-                        }
-                    }
-
-                    if (durationUs <= 0 && (extractionParams.timesUsRelative == null || extractionParams.timesUsRelative.length == 0)) {
-                        Bitmap single = infoRetriever.getFrameAtTime(0);
-                        if (single != null) {
-                            single = scaleDownIfNeeded(single, dim);
-                            File f = new File(outputDir, "frame_000.jpg");
-                            try (FileOutputStream fos = new FileOutputStream(f)) {
-                                single.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos);
-                            }
-                            single.recycle();
-                            writtenFrames.set(1);
-                        }
-                        executor.shutdown();
-                        finishExtraction(appContext, dialogHolder[0], callback, "Extraction complete (1 frame)");
-                        return;
-                    }
-                }
-
-                // Initialize retriever pool safely
+                // Determine duration and initialize pool simultaneously (no redundant setup)
                 for (int i = 0; i < numThreads; i++) {
                     MediaMetadataRetriever r = new MediaMetadataRetriever();
                     try {
@@ -155,6 +112,39 @@ public class VideoFrameExtractor {
                 if (retrievers.isEmpty()) {
                     throw new IllegalStateException("Failed to initialize any MediaMetadataRetrievers");
                 }
+
+                MediaMetadataRetriever infoRetriever = retrievers.peek();
+                long durationUs = 0;
+                String durationStr = infoRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                if (durationStr != null) {
+                    try {
+                        durationUs = Long.parseLong(durationStr) * 1000L;
+                    } catch (NumberFormatException e) {
+                        Log.w(TAG, "Invalid duration metadata", e);
+                    }
+                }
+
+                File outputDir = new File(appContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "extracted_frames");
+                if (!outputDir.exists()) outputDir.mkdirs();
+                
+                java.util.concurrent.atomic.AtomicInteger writtenFrames = new java.util.concurrent.atomic.AtomicInteger(0);
+
+                if (durationUs <= 0 && (extractionParams.timesUsRelative == null || extractionParams.timesUsRelative.length == 0)) {
+                    Bitmap single = infoRetriever.getFrameAtTime(0);
+                    if (single != null) {
+                        single = scaleDownIfNeeded(single, dim);
+                        File f = new File(outputDir, "frame_000.jpg");
+                        try (FileOutputStream fos = new FileOutputStream(f)) {
+                            single.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos);
+                        }
+                        single.recycle();
+                        writtenFrames.set(1);
+                    }
+                    finishExtraction(context, dialogHolder[0], callback, "Extraction complete (1 frame)");
+                    return;
+                }
+
+                java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(numThreads);
 
                 Log.i(TAG, "Starting extraction loop. Steps: " + totalSteps);
                 java.util.List<java.util.concurrent.Future<Void>> futures = new java.util.ArrayList<>();
@@ -179,114 +169,115 @@ public class VideoFrameExtractor {
 
                 java.util.concurrent.atomic.AtomicInteger progressCounter = new java.util.concurrent.atomic.AtomicInteger(0);
 
-                for (int i = 0; i < totalSteps; i++) {
-                    final int stepIndex = i;
-                    final long timeUs = timeUsList[i];
-                    
-                    // Skip redundant seeks if the gap is < 1ms
-                    if (stepIndex > 0 && Math.abs(timeUs - timeUsList[stepIndex - 1]) < 1000L) {
-                        int c = progressCounter.incrementAndGet();
-                        float progress = (float)c / totalSteps;
-                        if (callback != null) callback.onProgress(progress);
-                        updateProgress(appContext, progressBarHolder[0], statusTextHolder[0], c, totalSteps);
-                        continue;
-                    }
+                try {
+                    for (int i = 0; i < totalSteps; i++) {
+                        final int stepIndex = i;
+                        final long timeUs = timeUsList[i];
+                        
+                        // Skip redundant seeks if the gap is < 1ms
+                        if (stepIndex > 0 && Math.abs(timeUs - timeUsList[stepIndex - 1]) < 1000L) {
+                            int c = progressCounter.incrementAndGet();
+                            float progress = (float)c / totalSteps;
+                            if (callback != null) callback.onProgress(progress);
+                            updateProgress(context, progressBarHolder[0], statusTextHolder[0], c, totalSteps);
+                            continue;
+                        }
 
-                    futures.add(executor.submit(() -> {
-                        MediaMetadataRetriever retriever = null;
-                        try {
-                            retriever = retrievers.take();
-                            
-                            Bitmap bitmap = null;
+                        futures.add(executor.submit(() -> {
+                            MediaMetadataRetriever retriever = null;
                             try {
-                                int opt = MediaMetadataRetriever.OPTION_CLOSEST_SYNC;
-                                if (Build.VERSION.SDK_INT >= 27) {
-                                    try {
-                                        bitmap = retriever.getScaledFrameAtTime(timeUs, opt, dim, dim);
-                                    } catch (Exception t) {
-                                        bitmap = retriever.getFrameAtTime(timeUs, opt);
-                                    }
-                                } else {
-                                    bitmap = retriever.getFrameAtTime(timeUs, opt);
-                                }
-
-                                if (bitmap == null) {
-                                    opt = MediaMetadataRetriever.OPTION_CLOSEST;
+                                retriever = retrievers.take();
+                                
+                                Bitmap bitmap = null;
+                                try {
+                                    int opt = MediaMetadataRetriever.OPTION_CLOSEST_SYNC;
+                                    
                                     if (Build.VERSION.SDK_INT >= 27) {
                                         try {
                                             bitmap = retriever.getScaledFrameAtTime(timeUs, opt, dim, dim);
-                                        } catch (Exception t) {
-                                            bitmap = retriever.getFrameAtTime(timeUs, opt);
+                                        } catch (IllegalArgumentException | IllegalStateException e) {
+                                            // Fallback
                                         }
-                                    } else {
+                                    }
+                                    if (bitmap == null) {
                                         bitmap = retriever.getFrameAtTime(timeUs, opt);
                                     }
-                                }
 
-                                if (bitmap != null) {
-                                    Bitmap scaled = scaleDownIfNeeded(bitmap, dim);
-                                    if (scaled != bitmap) {
+                                    if (bitmap == null) {
+                                        opt = MediaMetadataRetriever.OPTION_CLOSEST;
+                                        if (Build.VERSION.SDK_INT >= 27) {
+                                            try {
+                                                bitmap = retriever.getScaledFrameAtTime(timeUs, opt, dim, dim);
+                                            } catch (IllegalArgumentException | IllegalStateException e) {
+                                                // Fallback
+                                            }
+                                        }
+                                        if (bitmap == null) {
+                                            bitmap = retriever.getFrameAtTime(timeUs, opt);
+                                        }
+                                    }
+
+                                    if (bitmap != null) {
+                                        bitmap = scaleDownIfNeeded(bitmap, dim);
+                                        
+                                        File outFile = new File(outputDir, String.format("frame_%03d.jpg", stepIndex));
+                                        try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                                            bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos);
+                                            fos.flush();
+                                            writtenFrames.incrementAndGet();
+                                        } catch (java.io.IOException e) {
+                                            Log.e(TAG, "Failed to write frame file " + outFile, e);
+                                        }
+                                    }
+                                } catch (OutOfMemoryError oom) {
+                                    Log.e(TAG, "OOM extracting frame " + stepIndex, oom);
+                                } catch (Exception t) {
+                                    Log.e(TAG, "Error extracting frame " + stepIndex, t);
+                                } finally {
+                                    if (bitmap != null) {
                                         bitmap.recycle();
-                                        bitmap = scaled;
-                                    }
-                                    
-                                    File outFile = new File(outputDir, String.format("frame_%03d.jpg", stepIndex));
-                                    try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                                        bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos);
-                                        fos.flush();
-                                        writtenFrames.incrementAndGet();
-                                    } catch (java.io.IOException e) {
-                                        Log.e(TAG, "Failed to write frame file " + outFile, e);
                                     }
                                 }
-                            } catch (OutOfMemoryError oom) {
-                                Log.e(TAG, "OOM extracting frame " + stepIndex, oom);
-                            } catch (Exception t) {
-                                Log.e(TAG, "Error extracting frame " + stepIndex, t);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
                             } finally {
-                                if (bitmap != null) {
-                                    bitmap.recycle();
+                                if (retriever != null) {
+                                    try {
+                                        retrievers.put(retriever);
+                                    } catch (InterruptedException ignore) {
+                                        Thread.currentThread().interrupt();
+                                    }
                                 }
-                            }
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                        } finally {
-                            if (retriever != null) {
-                                try {
-                                    retrievers.put(retriever);
-                                } catch (InterruptedException ignore) {
-                                    Thread.currentThread().interrupt();
+                                int c = progressCounter.incrementAndGet();
+                                if (c % 10 == 0) {
+                                    Log.i(TAG, "Extraction progress: " + c + " of " + totalSteps);
                                 }
+                                float progress = (float)c / totalSteps;
+                                if (callback != null) callback.onProgress(progress);
+                                updateProgress(context, progressBarHolder[0], statusTextHolder[0], c, totalSteps);
                             }
-                            int c = progressCounter.incrementAndGet();
-                            if (c % 10 == 0) {
-                                Log.i(TAG, "Extraction progress: " + c + " of " + totalSteps);
-                            }
-                            float progress = (float)c / totalSteps;
-                            if (callback != null) callback.onProgress(progress);
-                            updateProgress(appContext, progressBarHolder[0], statusTextHolder[0], c, totalSteps);
-                        }
-                        return null;
-                    }));
-                }
-
-                for (java.util.concurrent.Future<Void> f : futures) {
-                    try {
-                        f.get();
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error waiting for frame extraction thread", e);
+                            return null;
+                        }));
                     }
+
+                    for (java.util.concurrent.Future<Void> f : futures) {
+                        try {
+                            f.get();
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error waiting for frame extraction thread", e);
+                        }
+                    }
+                } finally {
+                    executor.shutdownNow();
                 }
-                
-                executor.shutdown();
 
                 Log.i(TAG, "Extraction finished: wrote " + writtenFrames.get() + "/" + totalSteps
                         + ", outputDir=" + (outputDir != null ? outputDir.getAbsolutePath() : "<null>"));
-                finishExtraction(appContext, dialogHolder[0], callback, "Extraction finished");
+                finishExtraction(context, dialogHolder[0], callback, "Extraction finished");
 
             } catch (Exception e) {
                 Log.e(TAG, "Extraction failed", e);
-                failExtraction(appContext, dialogHolder[0], callback, e);
+                failExtraction(context, dialogHolder[0], callback, e);
             } finally {
                 for (MediaMetadataRetriever r : retrievers) {
                     try {
@@ -307,11 +298,19 @@ public class VideoFrameExtractor {
         float scale = (float) maxEdge / (float) maxDim;
         int newW = Math.max(1, Math.round(w * scale));
         int newH = Math.max(1, Math.round(h * scale));
-        return Bitmap.createScaledBitmap(bitmap, newW, newH, true);
+        
+        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, newW, newH, true);
+        if (scaled != bitmap && bitmap != null) {
+            bitmap.recycle();
+        }
+        return scaled;
     }
 
     private static void updateProgress(Context context, ProgressBar bar, TextView text, int progress, int total) {
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            if (context instanceof android.app.Activity && (((android.app.Activity)context).isFinishing() || ((android.app.Activity)context).isDestroyed())) {
+                return;
+            }
             if (bar != null) bar.setProgress(progress);
             if (text != null) text.setText(progress + " / " + total);
         });
@@ -319,16 +318,24 @@ public class VideoFrameExtractor {
 
     private static void finishExtraction(Context context, AlertDialog dialog, ExtractionCallback callback, String msg) {
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-            if (dialog != null) dialog.dismiss();
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show();
+            if (context instanceof android.app.Activity && !((android.app.Activity)context).isFinishing() && !((android.app.Activity)context).isDestroyed()) {
+                if (dialog != null && dialog.isShowing()) {
+                    try { dialog.dismiss(); } catch (Exception ignore) {}
+                }
+            }
+            Toast.makeText(context.getApplicationContext(), msg, Toast.LENGTH_SHORT).show();
             if (callback != null) callback.onFinished();
         });
     }
 
     private static void failExtraction(Context context, AlertDialog dialog, ExtractionCallback callback, Exception e) {
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-            if (dialog != null) dialog.dismiss();
-            Toast.makeText(context, "Extraction failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            if (context instanceof android.app.Activity && !((android.app.Activity)context).isFinishing() && !((android.app.Activity)context).isDestroyed()) {
+                if (dialog != null && dialog.isShowing()) {
+                    try { dialog.dismiss(); } catch (Exception ignore) {}
+                }
+            }
+            Toast.makeText(context.getApplicationContext(), "Extraction failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
             if (callback != null) callback.onFailure(e);
         });
     }
