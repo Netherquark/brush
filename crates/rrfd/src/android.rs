@@ -1,6 +1,6 @@
 use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JStaticMethodID, JString};
-use jni::signature::Primitive;
+
 use jni::sys::jint;
 use lazy_static::lazy_static;
 use std::os::fd::FromRawFd;
@@ -12,8 +12,8 @@ use tokio::sync::mpsc::Sender;
 lazy_static! {
     static ref VM: RwLock<Option<Arc<jni::JavaVM>>> = RwLock::new(None);
 
-    // ✅ Now sends (File, filename)
-    static ref CHANNEL: RwLock<Option<Sender<Option<(File, String)>>>> =
+    // ✅ Uses std::fs::File for inner payload to circumvent Tokio reactor thread context panic
+    static ref CHANNEL: RwLock<Option<Sender<Option<(std::fs::File, String)>>>> =
         RwLock::new(None);
 
     static ref START_FILE_PICKER: RwLock<Option<JStaticMethodID>> =
@@ -52,14 +52,16 @@ pub(crate) async fn pick_file() -> std::io::Result<(File, String)> {
         *channel = Some(sender);
     }
 
+    // Call method.
     {
+        log::info!("[BRUSH_FLOW] rrfd::pick_file: Triggering JNI startFilePicker directly.");
         let java_vm = VM
             .read()
             .unwrap()
             .clone()
             .expect("Java VM not initialized");
 
-        let mut env = java_vm.attach_current_thread().map_err(|e| {
+        let mut env = java_vm.attach_current_thread_as_daemon().map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("JNI error: {:?}", e),
@@ -73,7 +75,7 @@ pub(crate) async fn pick_file() -> std::io::Result<(File, String)> {
             env.call_static_method_unchecked(
                 class.as_ref().unwrap(),
                 method.as_ref().unwrap(),
-                jni::signature::ReturnType::Primitive(Primitive::Void),
+                jni::signature::ReturnType::Primitive(jni::signature::Primitive::Void),
                 &[],
             )
         }
@@ -93,7 +95,10 @@ pub(crate) async fn pick_file() -> std::io::Result<(File, String)> {
     })?;
 
     match result {
-        Some((file, name)) => Ok((file, name)),
+        Some((std_file, name)) => {
+            let file = tokio::fs::File::from_std(std_file);
+            Ok((file, name))
+        },
         None => Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "No file selected",
@@ -108,6 +113,7 @@ extern "system" fn Java_com_splats_app_FilePicker_onFilePickerResult<'local>(
     fd: jint,
     name: JString<'local>,
 ) {
+    log::info!("[BRUSH_FLOW] JNI onFilePickerResult callback triggered. FD: {}", fd);
     let filename: String = match env.get_string(&name) {
         Ok(s) => s.into(),
         Err(_) => "file".to_string(),
@@ -117,11 +123,12 @@ extern "system" fn Java_com_splats_app_FilePicker_onFilePickerResult<'local>(
         None
     } else {
         let std_file = unsafe { std::fs::File::from_raw_fd(fd) };
-        Some((File::from_std(std_file), filename))
+        Some((std_file, filename.clone()))
     };
 
     if let Ok(ch) = CHANNEL.read() {
         if let Some(ch) = ch.as_ref() {
+            log::info!("[BRUSH_FLOW] Sending file result to channel (FD: {}, Name: {})", fd, filename);
             let _ = ch.try_send(file);
         }
     }

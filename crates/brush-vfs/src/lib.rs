@@ -120,7 +120,9 @@ fn zip_error(e: async_zip::error::ZipError) -> io::Error {
 pub enum VfsConstructError {
     #[error("I/O error while constructing BrushVfs.")]
     IoError(#[from] std::io::Error),
-    #[error("Got a status page instead of content: \n\n {0}")]
+    #[error("Got a status page instead of content: 
+
+ {0}")]
     ReceivedHTML(String),
     #[error("Unknown data type. Only zip and ply files are supported")]
     UnknownDataType,
@@ -139,6 +141,7 @@ impl BrushVfs {
         mut reader: impl DynRead + 'static,
         name: Option<String>,
     ) -> Result<Self, VfsConstructError> {
+        log::info!("[BRUSH_FLOW] BrushVfs::from_reader started for file: {:?}", name);
         // Small hack to peek some bytes: Read them
         // and add them at the start again.
         let peek = read_at_most(&mut reader, 64).await?;
@@ -146,6 +149,7 @@ impl BrushVfs {
             Box::new(AsyncReadExt::chain(Cursor::new(peek.clone()), reader));
 
         if peek.starts_with(b"ply") {
+            log::info!("[BRUSH_FLOW] from_reader: PLY format detected.");
             // For single PLY files, keep the reader for streaming
             let path = PathBuf::from(name.unwrap_or_else(|| "input.ply".to_owned()));
 
@@ -473,7 +477,10 @@ mod tests {
     async fn test_format_detection_and_errors() {
         // Test PLY format
         let vfs = BrushVfs::from_reader(
-            Cursor::new(b"ply\nformat ascii 1.0\nend_header\nvertex data"),
+            Cursor::new(b"ply
+format ascii 1.0
+end_header
+vertex data"),
             None,
         )
         .await
@@ -485,7 +492,10 @@ mod tests {
             .read_to_string(&mut content)
             .await
             .unwrap();
-        assert_eq!(content, "ply\nformat ascii 1.0\nend_header\nvertex data");
+        assert_eq!(content, "ply
+format ascii 1.0
+end_header
+vertex data");
 
         // Test error cases
         assert!(matches!(

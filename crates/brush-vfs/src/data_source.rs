@@ -65,6 +65,7 @@ impl DataSource {
     pub async fn into_vfs(self) -> Result<Arc<BrushVfs>, DataSourceError> {
         match self {
             Self::PickFile => {
+                log::info!("[BRUSH_FLOW] into_vfs: DataSource::PickFile selected. Waiting for file picker...");
                 let picked = rrfd::pick_file().await?;
                 log::info!("Got file: {}", picked.name);
 

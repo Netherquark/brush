@@ -8526,6 +8526,7 @@ dependencies = [
  "jni",
  "js-sys",
  "lazy_static",
+ "log",
  "rfd",
  "thiserror 2.0.17",
  "tokio",

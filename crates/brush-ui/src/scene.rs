@@ -313,6 +313,7 @@ impl ScenePanel {
                 .add_enabled(!is_busy, button("📁 File", blue, !is_busy))
                 .clicked()
             {
+                log::info!("[BRUSH_FLOW] '📁 File' button clicked. Setting load_option to DataSource::PickFile.");
                 load_option = Some(DataSource::PickFile);
             }
             let mp4_label = self
@@ -569,6 +570,7 @@ impl ScenePanel {
 
     #[allow(clippy::unused_self)]
     fn start_loading(&self, source: DataSource, process: &UiProcess) {
+        log::info!("[BRUSH_FLOW] start_loading triggered with source: {:?}", source);
         let config_path = self.selected_config_path.clone();
         process.connect_to_process(create_process(
             source,

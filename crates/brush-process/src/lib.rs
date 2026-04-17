@@ -113,14 +113,17 @@ pub fn create_process<
 ) -> RunningProcess {
     let splat_view = Slot::default();
     let splat_state_cl = splat_view.clone();
+    log::info!("[BRUSH_FLOW] create_process called with source: {:?}", source);
 
     let stream = try_fn_stream(|emitter| async move {
         log::info!("Starting process with source {source:?}");
         emitter.emit(ProcessMessage::NewProcess).await;
 
         // Wait until the devise is set.
+        log::info!("[BRUSH_FLOW] create_process: Waiting for GPU device...");
         let device = DEVICE.wait().await.clone();
         let vfs = source.clone().into_vfs().await?;
+        log::info!("[BRUSH_FLOW] create_process: VFS mounted successfully.");
         let vfs_counts = vfs.file_count();
 
         if vfs_counts == 0 {
@@ -177,7 +180,7 @@ pub fn create_process<
             let total_frames = paths.len() as u32;
 
             for (frame, path) in paths.iter().enumerate() {
-                log::info!("Loading single ply file");
+                log::info!("[BRUSH_FLOW] create_process: Loading frame {} from ply file: {:?}", frame, path);
 
                 let mut splat_stream = pin!(brush_serde::stream_splat_from_ply(
                     vfs.reader_at_path(path).await?,
@@ -187,6 +190,7 @@ pub fn create_process<
 
                 while let Some(message) = splat_stream.next().await {
                     let message = message?;
+                    log::info!("[BRUSH_FLOW] create_process: Splat frame received and parsed.");
 
                     let mode = message.meta.render_mode.unwrap_or(SplatRenderMode::Default);
                     let splats = message.data.into_splats(&device, mode);
