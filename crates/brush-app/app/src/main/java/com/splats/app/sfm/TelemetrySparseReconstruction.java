@@ -1,6 +1,8 @@
 package com.splats.app.sfm;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.MediaMetadataRetriever;
 import android.os.Environment;
 import android.util.Log;
@@ -37,22 +39,35 @@ public final class TelemetrySparseReconstruction {
             throw new IllegalStateException("Extracted frames directory is missing");
         }
 
+        FrameLoadSummary frameSummary = loadFramesForSequence(sequence, framesDir);
+        List<FrameData> framesLoaded = frameSummary.frames;
         int filesOnDisk = countExtractedFrames(framesDir);
         Log.i(TAG, "Preparing sparse reconstruction with "
                 + sequence.getRecords().size() + " pose record(s), "
                 + filesOnDisk + " extracted frame file(s) in " + framesDir.getAbsolutePath());
 
-        VideoIntrinsics intrinsics = estimateIntrinsics(sequence.getVideoPath());
-        FrameLoadSummary frameSummary = loadFramesForSequence(sequence, framesDir);
-        List<FrameData> frames = frameSummary.frames;
-        Log.i(TAG, "Matched " + frames.size() + "/" + frameSummary.expectedCount
+        int width = 1920;
+        int height = 1080;
+        if (!framesLoaded.isEmpty()) {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(framesLoaded.get(0).frameFile.getAbsolutePath(), options);
+            if (options.outWidth > 0 && options.outHeight > 0) {
+                width = options.outWidth;
+                height = options.outHeight;
+                Log.i(TAG, "Detected decoded frame dimensions: " + width + "x" + height);
+            }
+        }
+
+        VideoIntrinsics intrinsics = estimateIntrinsics(width, height);
+        Log.i(TAG, "Matched " + framesLoaded.size() + "/" + frameSummary.expectedCount
                 + " pose frame(s) to extracted images");
         if (!frameSummary.missingFrameNames.isEmpty()) {
             Log.w(TAG, "Missing extracted frame files (sample): " + frameSummary.missingFrameNames);
         }
-        if (frames.size() < 2) {
+        if (framesLoaded.size() < 2) {
             throw new IllegalStateException(
-                    "Could not load enough extracted frames. matched=" + frames.size()
+                    "Could not load enough extracted frames. matched=" + framesLoaded.size()
                             + ", expected=" + frameSummary.expectedCount
                             + ", filesOnDisk=" + filesOnDisk
                             + ", dir=" + framesDir.getAbsolutePath()
@@ -63,24 +78,26 @@ public final class TelemetrySparseReconstruction {
         JSONArray gps = new JSONArray();
         JSONArray imu = new JSONArray();
 
-        for (int i = 0; i < frames.size(); i++) {
-            FrameData frame = frames.get(i);
+        for (int i = 0; i < framesLoaded.size(); i++) {
+            FrameData frame = framesLoaded.get(i);
             gps.put(gpsJson(i, frame.record));
         }
 
-        for (int i = 0; i < frames.size() - 1; i++) {
-            imu.put(imuJson(i, frames.get(i), i + 1, frames.get(i + 1)));
+        for (int i = 0; i < framesLoaded.size() - 1; i++) {
+            imu.put(imuJson(i, framesLoaded.get(i), i + 1, framesLoaded.get(i + 1)));
         }
 
         String cfg = (nativeConfigJson != null && !nativeConfigJson.isEmpty()) ? nativeConfigJson : "{}";
-        Log.i(TAG, "Invoking native SfM pipeline with " + frames.size() + " frames, GPS=" + gps.length() + ", IMU=" + imu.length());
+        Log.i(TAG, "Invoking native SfM pipeline with " + framesLoaded.size() + " frames, GPS=" + gps.length() + ", IMU=" + imu.length());
         String resultJson = OpenCvFrontendLib.runFullPipelineSync(
-                framesJson(frames).toString(),
+                framesJson(framesLoaded).toString(),
                 intrinsicsJson(intrinsics).toString(),
                 plyFile.getParent(), // Output directory for transforms.json and sparse.ply
                 cfg,
                 gps.toString(),
-                imu.toString()
+                imu.toString(),
+                width,
+                height
         );
         Log.i(TAG, "Native SfM pipeline returned result length: " + (resultJson != null ? resultJson.length() : 0));
 
@@ -153,29 +170,9 @@ public final class TelemetrySparseReconstruction {
     }
 
 
-    private static VideoIntrinsics estimateIntrinsics(File videoFile) {
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            retriever.setDataSource(videoFile.getAbsolutePath());
-            int width = parseIntOrDefault(
-                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH),
-                    1920
-            );
-            int height = parseIntOrDefault(
-                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT),
-                    1080
-            );
-            double focal = Math.max(width, height);
-            return new VideoIntrinsics(focal, focal, width * 0.5, height * 0.5);
-        } catch (Exception e) {
-            Log.w(TAG, "Falling back to default intrinsics", e);
-            return new VideoIntrinsics(1920.0, 1920.0, 960.0, 540.0);
-        } finally {
-            try {
-                retriever.release();
-            } catch (Exception ignored) {
-            }
-        }
+    private static VideoIntrinsics estimateIntrinsics(int width, int height) {
+        double focal = Math.max(width, height);
+        return new VideoIntrinsics(focal, focal, width * 0.5, height * 0.5);
     }
 
     private static int parseIntOrDefault(String value, int fallback) {

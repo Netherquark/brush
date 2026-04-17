@@ -178,7 +178,7 @@ pub mod jni_bridge {
         #[serde(default)]
         max_depth: Option<f64>,
         #[serde(default)]
-        orb_n_features: Option<i32>,
+        orb_keypoints: Option<i32>,
         #[serde(default)]
         ba_window_size: Option<usize>,
         #[serde(default)]
@@ -196,6 +196,8 @@ pub mod jni_bridge {
         gps_json: JString<'_>,
         imu_json: JString<'_>,
         output_dir: JString<'_>,
+        width: jni::sys::jint,
+        height: jni::sys::jint,
     ) -> jstring {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut to_string = |value: JString<'_>| -> String {
@@ -209,7 +211,7 @@ pub mod jni_bridge {
             let imu_str = to_string(imu_json);
             let out_dir_str = to_string(output_dir);
 
-            log::info!("Native runFullTrainSync started. Output dir: {}", out_dir_str);
+            log::info!("Native runFullTrainSync started. Res: {}x{}. Output dir: {}", width, height, out_dir_str);
 
             let json = match run_full_pipeline_from_json(
                 &frames_str,
@@ -218,24 +220,28 @@ pub mod jni_bridge {
                 &gps_str,
                 &imu_str,
                 &out_dir_str,
+                width,
+                height,
             ) {
                 Ok(value) => value,
                 Err(error) => serde_json::json!({ "error": error.to_string() }).to_string(),
             };
 
-            env.new_string(json)
-                .expect("failed to allocate Java string")
-                .into_raw()
+            match env.new_string(json) {
+                Ok(js) => js.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
         }));
 
         match result {
             Ok(value) => value,
-            Err(_) => env
-                .new_string(
-                    serde_json::json!({ "error": "Rust panic in OpenCV frontend" }).to_string(),
-                )
-                .expect("failed to allocate Java string")
-                .into_raw(),
+            Err(_) => {
+                let err_json = serde_json::json!({ "error": "Rust panic in OpenCV frontend" }).to_string();
+                match env.new_string(err_json) {
+                    Ok(js) => js.into_raw(),
+                    Err(_) => std::ptr::null_mut(),
+                }
+            }
         }
     }
 
@@ -246,6 +252,8 @@ pub mod jni_bridge {
         gps_json: &str,
         imu_json: &str,
         output_dir: &str,
+        img_w: i32,
+        img_h: i32,
     ) -> anyhow::Result<String> {
         let frames_input: Vec<FrontendFrameInput> =
             serde_json::from_str(frames_json).context("failed to parse frames json")?;
@@ -316,7 +324,7 @@ pub mod jni_bridge {
             }
 
             let n_orb_features = parsed_flat
-                .orb_n_features
+                .orb_keypoints
                 .unwrap_or(500)
                 .clamp(50, 10_000);
 
@@ -424,12 +432,7 @@ pub mod jni_bridge {
 
         // --- Stage 3.8: Pose Export ---
         let out_path = Path::new(output_dir);
-        // We need the image dimensions. Assuming consistency from the first frame.
-        // In a real app we'd get this from metadata or the image itself.
-        let img_w = 1920; // Defaulting for the refactor shell
-        let img_h = 1080; 
-
-        export_sfm_results(&global_state, &intrinsics, &frame_paths, out_path, img_w, img_h)?;
+        export_sfm_results(&global_state, &intrinsics, &frame_paths, out_path, img_w as u32, img_h as u32)?;
 
         serde_json::to_string(&serde_json::json!({
             "success": true,

@@ -766,7 +766,7 @@ public class MainActivity extends GameActivity {
         String toNativeSfmConfigJson() {
             try {
                 JSONObject o = new JSONObject();
-                o.put("orb_n_features", orbKeypoints);
+                o.put("orb_keypoints", orbKeypoints);
                 o.put("max_matches", Math.min(orbKeypoints, 2000));
                 o.put("ba_window_size", baWindowSize);
                 o.put("lm_max_iterations", lmMaxIterations);

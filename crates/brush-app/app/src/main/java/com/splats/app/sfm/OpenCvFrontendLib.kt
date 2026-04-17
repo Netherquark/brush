@@ -19,6 +19,8 @@ object OpenCvFrontendLib {
         gpsJson: String,
         imuJson: String,
         outputDir: String,
+        width: Int,
+        height: Int,
     ): String
 
     @JvmStatic
@@ -30,6 +32,8 @@ object OpenCvFrontendLib {
         configJson: String = "{}",
         gpsJson: String = "[]",
         imuJson: String = "[]",
+        width: Int,
+        height: Int,
     ): String {
         checkWorkerThread()
         return runFullTrainSync(
@@ -39,6 +43,8 @@ object OpenCvFrontendLib {
             gpsJson = gpsJson,
             imuJson = imuJson,
             outputDir = outputDir,
+            width = width,
+            height = height,
         )
     }
 
