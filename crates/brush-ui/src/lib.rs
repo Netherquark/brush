@@ -43,28 +43,10 @@ pub fn create_egui_options() -> WgpuConfiguration {
 }
 
 pub fn create_egui_options_with_hints(device_hint: Option<&str>) -> WgpuConfiguration {
-    #[cfg(not(target_os = "android"))]
     let backends = wgpu::Backends::all();
 
-    #[cfg(target_os = "android")]
-    let mut backends = wgpu::Backends::GL;
-
-    #[cfg(target_os = "android")]
-    {
-        // Android stability: Vulkan is extremely fragile on Adreno/Qualcomm (Poco/Xiaomi).
-        // GLES is universally stable and thus our default.
-        backends = wgpu::Backends::GL;
-
-        if let Some(hint) = device_hint {
-            let hint_lower = hint.to_lowercase();
-            // Whitelist Pixels/Google devices (Tensor G4 for the demo prototype) for modern Vulkan support.
-            if hint_lower.contains("pixel") || hint_lower.contains("google") || hint_lower.contains("tensor") {
-                log::info!("High-compliance hardware detected ({}): enabling Vulkan.", hint);
-                backends = wgpu::Backends::all();
-            } else {
-                log::info!("Android hardware ({}) detected: defaulting to stable GLES path.", hint);
-            }
-        }
+    if let Some(hint) = device_hint {
+        log::info!("Device hint provided ({}): using Vulkan/all default backends to meet compute constraints.", hint);
     }
 
     WgpuConfiguration {
@@ -75,14 +57,20 @@ pub fn create_egui_options_with_hints(device_hint: Option<&str>) -> WgpuConfigur
                     ..Default::default()
                 },
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                device_descriptor: Arc::new(|adapter: &Adapter| wgpu::DeviceDescriptor {
-                    label: Some("egui+burn"),
-                    required_features: adapter
-                        .features()
-                        .difference(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
-                    required_limits: adapter.limits(),
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                    trace: wgpu::Trace::Off,
+                device_descriptor: Arc::new(|adapter: &Adapter| {
+                    let mut limits = adapter.limits();
+                    // Burn's full_kernel and other compute shaders require at least 8 storage buffers
+                    limits.max_storage_buffers_per_shader_stage = limits.max_storage_buffers_per_shader_stage.max(8);
+
+                    wgpu::DeviceDescriptor {
+                        label: Some("egui+burn"),
+                        required_features: adapter
+                            .features()
+                            .difference(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
+                        required_limits: limits,
+                        memory_hints: wgpu::MemoryHints::MemoryUsage,
+                        trace: wgpu::Trace::Off,
+                    }
                 }),
                 ..Default::default()
             },

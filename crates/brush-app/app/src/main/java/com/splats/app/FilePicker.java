@@ -49,7 +49,7 @@ public class FilePicker {
         intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
 
         Log.i("FilePicker", "Starting file picker (requestCode=" + requestCode + ")");
-        _activity.startActivityForResult(intent, requestCode);
+        _activity.runOnUiThread(() -> _activity.startActivityForResult(intent, requestCode));
     }
 
     // CSV picker for telemetry ingest
@@ -72,7 +72,7 @@ public class FilePicker {
         intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
 
         Log.i("FilePicker", "Starting CSV picker (requestCode=" + requestCode + ")");
-        _activity.startActivityForResult(intent, requestCode);
+        _activity.runOnUiThread(() -> _activity.startActivityForResult(intent, requestCode));
     }
 
     // Called by MainActivity; ensures null-check and preserves old native-callback behavior

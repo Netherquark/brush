@@ -230,7 +230,10 @@ impl App {
         );
 
         log::info!("Connecting context to Burn device & GUI context.");
-        let context = std::sync::Arc::new(UiProcess::new(burn_device, cc.egui_ctx.clone()));
+        let context = std::sync::Arc::new(UiProcess::new(
+            burn_device,
+            cc.egui_ctx.clone(),
+        ));
 
         if let Some(process) = init_process {
             context.connect_to_process(process);
@@ -305,11 +308,6 @@ impl eframe::App for App {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, TREE_STORAGE_KEY, &self.tree);
-    }
-
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let _span = trace_span!("Update UI").entered();
         self.receive_messages();

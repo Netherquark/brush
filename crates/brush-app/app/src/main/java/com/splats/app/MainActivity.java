@@ -112,6 +112,15 @@ public class MainActivity extends GameActivity {
         });
     }
 
+    /** Button 1 - pick a .ply file */
+    public static void pickFile() {
+        if (instance == null) return;
+        instance.runOnUiThread(() -> {
+            Log.i(TAG, "pickFile from Rust");
+            FilePicker.startFilePicker(FilePicker.REQUEST_CODE_PICK_FILE);
+        });
+    }
+
     /** Unified Train button – runs full SfM pipeline (3.1 - 3.8) */
     public static void runTrain(String configJson) {
         if (instance == null) {

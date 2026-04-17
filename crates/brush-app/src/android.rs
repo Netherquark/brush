@@ -21,6 +21,7 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jni::sys::
     cache.choose_config = env.get_static_method_id(&class, "chooseConfig", "()V").ok();
     cache.run_train = env.get_static_method_id(&class, "runTrain", "(Ljava/lang/String;)V").ok();
     cache.get_device_model = env.get_static_method_id(&class, "getDeviceModel", "()Ljava/lang/String;").ok();
+    cache.pick_file = env.get_static_method_id(&class, "pickFile", "()V").ok();
 
     jni::sys::JNI_VERSION_1_6
 }
@@ -54,6 +55,7 @@ struct JniMethodCache {
     choose_config: Option<jni::objects::JStaticMethodID>,
     run_train: Option<jni::objects::JStaticMethodID>,
     get_device_model: Option<jni::objects::JStaticMethodID>,
+    pick_file: Option<jni::objects::JStaticMethodID>,
 }
 
 #[unsafe(no_mangle)]
@@ -158,6 +160,7 @@ fn call_java_static(method_name: &str) {
                 "chooseMp4" => cache.choose_mp4.as_ref(),
                 "chooseCsv" => cache.choose_csv.as_ref(),
                 "chooseConfig" => cache.choose_config.as_ref(),
+                "pickFile" => cache.pick_file.as_ref(),
                 _ => None,
             }.cloned()
         };
@@ -300,57 +303,59 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         .build()
         .unwrap();
 
-    let _guard = runtime.enter();
+    runtime.block_on(async move {
+        eframe::run_native(
+            "Brush",
+            eframe::NativeOptions {
+                // Build app display.
+                viewport: egui::ViewportBuilder::default(),
+                android_app: Some(app),
+                wgpu_options,
+                ..Default::default()
+            },
+            Box::new(move |cc| {
+                let app = App::new(cc, None);
 
-    eframe::run_native(
-        "Brush",
-        eframe::NativeOptions {
-            // Build app display.
-            viewport: egui::ViewportBuilder::default(),
-            android_app: Some(app),
-            wgpu_options,
-            ..Default::default()
-        },
-        Box::new(move |cc| {
-            let app = App::new(cc, None);
+                #[cfg(target_os = "android")]
+                {
+                    let ctx = app.context();
+                    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+                    *PLATFORM_EVENT_SENDER.write().unwrap() = Some(sender);
 
-            #[cfg(target_os = "android")]
-            {
-                let ctx = app.context();
-                let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-                *PLATFORM_EVENT_SENDER.write().unwrap() = Some(sender);
+                    let ctx_clone = ctx.clone();
+                    tokio::spawn(async move {
+                        log::info!("[BRUSH_FLOW] Platform event handler task started.");
+                        while let Some(event) = receiver.recv().await {
+                            log::debug!("[BRUSH_FLOW] Received platform event: {:?}", event);
+                            ctx_clone.dispatch_platform_event(event);
+                        }
+                    });
 
-                let ctx_clone = ctx.clone();
-                runtime.spawn(async move {
-                    while let Some(event) = receiver.recv().await {
-                        ctx_clone.dispatch_platform_event(event);
-                    }
-                });
+                    let proc_extract = ctx.clone();
+                    ctx.register_platform_action("choose_mp4",
+                        Arc::new(|| call_java_static("chooseMp4")));
+                    ctx.register_platform_action("extract_frames", Arc::new(move || {
+                        let json = proc_extract
+                            .take_platform_action_payload()
+                            .unwrap_or_else(|| "{}".to_string());
+                        call_java_static_string("extractFrames", &json);
+                    }));
+                    ctx.register_platform_action("choose_csv",
+                        Arc::new(|| call_java_static("chooseCsv")));
+                    ctx.register_platform_action("choose_config",
+                        Arc::new(|| call_java_static("chooseConfig")));
+                    let proc_train = ctx.clone();
+                    ctx.register_platform_action("run_train", Arc::new(move || {
+                        let json = proc_train
+                            .take_platform_action_payload()
+                            .unwrap_or_else(|| "{}".to_string());
+                        call_java_static_string("runTrain", &json);
+                    }));
+                }
 
-                let proc_extract = ctx.clone();
-                ctx.register_platform_action("choose_mp4",
-                    Arc::new(|| call_java_static("chooseMp4")));
-                ctx.register_platform_action("extract_frames", Arc::new(move || {
-                    let json = proc_extract
-                        .take_platform_action_payload()
-                        .unwrap_or_else(|| "{}".to_string());
-                    call_java_static_string("extractFrames", &json);
-                }));
-                ctx.register_platform_action("choose_csv",
-                    Arc::new(|| call_java_static("chooseCsv")));
-                ctx.register_platform_action("choose_config",
-                    Arc::new(|| call_java_static("chooseConfig")));
-                let proc_train = ctx.clone();
-                ctx.register_platform_action("run_train", Arc::new(move || {
-                    let json = proc_train
-                        .take_platform_action_payload()
-                        .unwrap_or_else(|| "{}".to_string());
-                    call_java_static_string("runTrain", &json);
-                }));
-            }
-
-            Ok(Box::new(app))
-        }),
-    )
-    .unwrap();
+                Ok(Box::new(app))
+            }),
+        )
+        .unwrap();
+    });
 }

@@ -73,8 +73,14 @@ pub struct TexHandle {
 }
 
 impl UiProcess {
-    pub fn new(dev: WgpuDevice, ui_ctx: egui::Context) -> Self {
-        Self(RwLock::new(UiProcessInner::new(dev, ui_ctx)))
+    pub fn new(
+        dev: WgpuDevice,
+        ui_ctx: egui::Context,
+    ) -> Self {
+        Self(RwLock::new(UiProcessInner::new(
+            dev,
+            ui_ctx,
+        )))
     }
 
     pub(crate) fn background_style(&self) -> BackgroundStyle {
@@ -215,8 +221,12 @@ impl UiProcess {
         let mut process = process;
 
         let egui_ctx = self.read().ui_ctx.clone();
-
+ 
+        let egui_ctx = self.read().ui_ctx.clone();
+ 
+        log::info!("[BRUSH_FLOW] connect_to_process: Spawning background task.");
         task::spawn(async move {
+            log::info!("[BRUSH_FLOW] Async process message handler task started.");
             while let Some(msg) = process.stream.next().await {
                 // Stop the process if no one is listening anymore.
                 if sender.send(msg).is_err() {
@@ -393,7 +403,10 @@ struct UiProcessInner {
 }
 
 impl UiProcessInner {
-    pub fn new(burn_device: WgpuDevice, ui_ctx: egui::Context) -> Self {
+    pub fn new(
+        burn_device: WgpuDevice,
+        ui_ctx: egui::Context,
+    ) -> Self {
         let position = -Vec3::Z * 2.5;
         let rotation = Quat::IDENTITY;
 
