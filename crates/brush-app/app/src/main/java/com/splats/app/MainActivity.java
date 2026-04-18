@@ -156,6 +156,8 @@ public class MainActivity extends GameActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CoroutineScope telemetryScope;
     private TelemetryPreprocessor telemetryPreprocessor;
+    /** Handle for the current frame-extraction operation; null when idle. */
+    private volatile VideoFrameExtractor.CancellationHandle extractionHandle = null;
     
     /** Returns the device model string (e.g. "Pixel 9a" or "23049PCD8G" for Poco F5). */
     public static String getDeviceModel() {
@@ -203,6 +205,10 @@ public class MainActivity extends GameActivity {
 
     @Override
     protected void onDestroy() {
+        if (extractionHandle != null) {
+            extractionHandle.cancel();
+            extractionHandle = null;
+        }
         if (telemetryPreprocessor != null) {
             telemetryPreprocessor.cancel();
             telemetryPreprocessor = null;
@@ -515,8 +521,14 @@ public class MainActivity extends GameActivity {
                 params.timesUsRelative = timesUs;
             }
 
+            // Cancel any previous extraction before starting a new one.
+            if (extractionHandle != null) {
+                Log.i(TAG, "Cancelling previous extraction before starting a new one");
+                extractionHandle.cancel();
+            }
+
             Log.i(TAG, "Initiating frame extraction...");
-            VideoFrameExtractor.extractFrames(this, uri, params, new VideoFrameExtractor.ExtractionCallback() {
+            extractionHandle = VideoFrameExtractor.extractFrames(this, uri, params, new VideoFrameExtractor.ExtractionCallback() {
                 @Override
                 public void onProgress(float progress) {
                     notifyPlatformEvent("progress:extracting", String.format(Locale.US, "%.3f", progress));
@@ -524,6 +536,7 @@ public class MainActivity extends GameActivity {
 
                 @Override
                 public void onFinished() {
+                    extractionHandle = null;
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "Frames extracted!", Toast.LENGTH_SHORT).show());
                     notifyPlatformEvent("extraction_complete", "");
                     if (telemetryMode) {
@@ -535,7 +548,15 @@ public class MainActivity extends GameActivity {
                 }
 
                 @Override
+                public void onCancelled() {
+                    extractionHandle = null;
+                    Log.i(TAG, "Frame extraction was cancelled by the user");
+                    notifyPlatformEvent("extraction_cancelled", "");
+                }
+
+                @Override
                 public void onFailure(Exception e) {
+                    extractionHandle = null;
                     notifyPlatformEvent("extraction_complete", "error");
                 }
             });
