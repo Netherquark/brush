@@ -15,6 +15,7 @@ import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class VideoFrameExtractor {
     private static final String TAG = "VideoFrameExtractor";
@@ -25,7 +26,34 @@ public class VideoFrameExtractor {
     public interface ExtractionCallback {
         void onProgress(float progress);
         void onFinished();
+        void onCancelled();
         void onFailure(Exception e);
+    }
+
+    /**
+     * Opaque handle returned by {@link #extractFrames}. Call {@link #cancel()} to
+     * request a graceful stop of the background extraction thread.
+     *
+     * <p>When cancellation is requested the extraction loop exits at the next frame
+     * boundary, all {@code frame_*.jpg} files that were already written are deleted,
+     * and {@link ExtractionCallback#onCancelled()} is dispatched on the main thread.
+     * The source {@code .mp4} and {@code .csv} files are never touched.</p>
+     */
+    public static final class CancellationHandle {
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
+        /** Returns {@code true} if cancellation has been requested. */
+        public boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        /**
+         * Request cancellation. Safe to call from any thread.
+         * Has no effect if extraction has already finished.
+         */
+        public void cancel() {
+            cancelled.set(true);
+        }
     }
 
     public static final class Params {
@@ -39,9 +67,16 @@ public class VideoFrameExtractor {
         public long[] timesUsRelative;
     }
 
-    public static void extractFrames(Context context, Uri videoUri, Params params, ExtractionCallback callback) {
+    /**
+     * Begin asynchronous frame extraction.
+     *
+     * @return a {@link CancellationHandle} that the caller can use to stop the operation.
+     */
+    public static CancellationHandle extractFrames(Context context, Uri videoUri, Params params, ExtractionCallback callback) {
         final Params extractionParams = params != null ? params : new Params();
         cleanupExtractedFrames(context);
+
+        final CancellationHandle handle = new CancellationHandle();
 
         final int totalSteps;
         if (extractionParams.timesUsRelative != null && extractionParams.timesUsRelative.length > 0) {
@@ -78,6 +113,13 @@ public class VideoFrameExtractor {
                     builder.setView(layout);
                     builder.setCancelable(false);
 
+                    // ── Cancel button ──────────────────────────────────────
+                    builder.setNegativeButton("Cancel", (dialog, which) -> {
+                        Log.i(TAG, "User requested cancellation of frame extraction");
+                        handle.cancel();
+                        dialog.dismiss();
+                    });
+
                     AlertDialog dialog = builder.create();
                     dialog.show();
 
@@ -111,6 +153,13 @@ public class VideoFrameExtractor {
                 if (outputDir != null && !outputDir.exists()) outputDir.mkdirs();
                 int writtenFrames = 0;
 
+                // ── Check cancellation before any heavy work ───────────────
+                if (handle.isCancelled()) {
+                    retriever.release();
+                    cancelExtraction(context, dialogHolder[0], callback, outputDir);
+                    return;
+                }
+
                 if (durationMs <= 0 && (extractionParams.timesUsRelative == null || extractionParams.timesUsRelative.length == 0)) {
                     Bitmap single = retriever.getFrameAtTime(0);
                     if (single != null) {
@@ -130,6 +179,15 @@ public class VideoFrameExtractor {
                 Log.i(TAG, "Starting extraction loop. Steps: " + totalSteps);
                 long lastTimeUs = -2000L;
                 for (int i = 0; i < totalSteps; i++) {
+
+                    // ── Cancellation check at each frame boundary ──────────
+                    if (handle.isCancelled()) {
+                        Log.i(TAG, "Extraction cancelled at step " + i + " of " + totalSteps);
+                        retriever.release();
+                        cancelExtraction(context, dialogHolder[0], callback, outputDir);
+                        return;
+                    }
+
                     if (i % 10 == 0) {
                         Log.i(TAG, "Extraction step " + i + " of " + totalSteps);
                     }
@@ -221,6 +279,8 @@ public class VideoFrameExtractor {
                 failExtraction(context, dialogHolder[0], callback, e);
             }
         }).start();
+
+        return handle;
     }
 
     private static Bitmap scaleDownIfNeeded(Bitmap bitmap, int maxEdge) {
@@ -250,7 +310,7 @@ public class VideoFrameExtractor {
     private static void finishExtraction(Context context, AlertDialog dialog, ExtractionCallback callback, String msg) {
         if (context instanceof android.app.Activity) {
             ((android.app.Activity) context).runOnUiThread(() -> {
-                if (dialog != null) dialog.dismiss();
+                if (dialog != null && dialog.isShowing()) dialog.dismiss();
                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show();
                 if (callback != null) callback.onFinished();
             });
@@ -260,9 +320,27 @@ public class VideoFrameExtractor {
     private static void failExtraction(Context context, AlertDialog dialog, ExtractionCallback callback, Exception e) {
         if (context instanceof android.app.Activity) {
             ((android.app.Activity) context).runOnUiThread(() -> {
-                if (dialog != null) dialog.dismiss();
+                if (dialog != null && dialog.isShowing()) dialog.dismiss();
                 Toast.makeText(context, "Extraction failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 if (callback != null) callback.onFailure(e);
+            });
+        }
+    }
+
+    /**
+     * Called when the user cancels extraction. Deletes any partially-written
+     * {@code frame_*.jpg} files but leaves the source {@code .mp4} and {@code .csv}
+     * files completely untouched.
+     */
+    private static void cancelExtraction(Context context, AlertDialog dialog, ExtractionCallback callback, File outputDir) {
+        Log.i(TAG, "Cleaning up partial frames after cancellation");
+        deleteFilesMatching(outputDir, name -> name.startsWith("frame_") && name.endsWith(".jpg"));
+
+        if (context instanceof android.app.Activity) {
+            ((android.app.Activity) context).runOnUiThread(() -> {
+                if (dialog != null && dialog.isShowing()) dialog.dismiss();
+                Toast.makeText(context, "Extraction cancelled", Toast.LENGTH_SHORT).show();
+                if (callback != null) callback.onCancelled();
             });
         }
     }
