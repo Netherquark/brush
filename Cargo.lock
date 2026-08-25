@@ -1260,6 +1260,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "brush-sfm"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "brush-sort"
 version = "1.0.0"
 dependencies = [

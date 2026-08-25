@@ -1,0 +1,12 @@
+[package]
+name = "brush-sfm"
+edition.workspace = true
+version.workspace = true
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nalgebra = "0.34"
+serde.workspace = true
+thiserror.workspace = true
