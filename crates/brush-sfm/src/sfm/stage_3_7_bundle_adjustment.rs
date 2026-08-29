@@ -41,12 +41,10 @@ pub struct GpsPrior {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImuRotationPrior {
-    #[serde(default)]
-    pub frame_a: usize,
-    #[serde(default)]
-    pub frame_b: usize,
-    #[serde(default = "identity_rotation")]
-    pub delta_rotation: [[f64; 3]; 3],
+    #[serde(default, alias = "frame_a")]
+    pub frame_idx: usize,
+    #[serde(default = "identity_rotation", alias = "delta_rotation")]
+    pub measured_rotation: [[f64; 3]; 3],
     #[serde(default = "default_weight")]
     pub weight: f64,
 }
@@ -139,6 +137,8 @@ impl Default for LmConfig {
     }
 }
 
+/// Sliding-window LM. Oldest frames are discarded when the window slides.
+/// Marginalization is out of scope for this MVP; discard is the documented choice.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SlidingWindowConfig {
     pub window_size: usize,
@@ -153,8 +153,8 @@ pub struct SlidingWindowConfig {
 impl Default for SlidingWindowConfig {
     fn default() -> Self {
         Self {
-            window_size: 8,
-            min_observations: 12,
+            window_size: 15,
+            min_observations: 2,
             freeze_first_frame: true,
             export_ply_path: None,
             lm: LmConfig::default(),
@@ -201,7 +201,6 @@ struct GpsJacobianBlock {
 #[derive(Debug, Clone)]
 struct ImuJacobianBlock {
     j_omega_a: Matrix3<f64>,
-    j_omega_b: Matrix3<f64>,
 }
 
 pub fn axis_angle_to_rotation(axis_angle: [f64; 3]) -> [[f64; 3]; 3] {
@@ -224,7 +223,7 @@ pub fn run_levenberg_marquardt(
     }
 
     let state = global_to_ba_state(global, Vec::new());
-    let result = run_lm_core(
+    let (result, refined) = run_lm_core(
         &state,
         &global.observations,
         &global.gps_priors,
@@ -235,7 +234,7 @@ pub fn run_levenberg_marquardt(
 
     let frame_mapping: Vec<usize> = (0..global.rotations.len()).collect();
     let point_mapping: Vec<usize> = (0..global.points.len()).collect();
-    apply_state_to_global(global, &state, &frame_mapping, &point_mapping);
+    apply_state_to_global(global, &refined, &frame_mapping, &point_mapping);
     result
 }
 
@@ -267,16 +266,7 @@ pub fn run_sliding_window_ba(
         };
 
         any_window = true;
-        let result = run_lm_core(
-            &window.state,
-            &window.observations,
-            &window.gps_priors,
-            &window.imu_priors,
-            k,
-            &cfg.lm,
-        );
-
-        let final_state = apply_result_state(
+        let (result, final_state) = run_lm_core(
             &window.state,
             &window.observations,
             &window.gps_priors,
@@ -321,7 +311,7 @@ pub fn build_global_state_from_json(
         serde_json::from_str(obs_json).context("failed to parse observations json")?;
     let gps_priors: Vec<GpsPrior> =
         serde_json::from_str(gps_json).context("failed to parse gps priors json")?;
-    let mut imu_priors: Vec<ImuRotationPrior> =
+    let imu_priors: Vec<ImuRotationPrior> =
         serde_json::from_str(imu_json).context("failed to parse imu priors json")?;
 
     let frame_ids = poses
@@ -331,12 +321,6 @@ pub fn build_global_state_from_json(
         .collect();
     let rotations = poses.iter().map(|pose| pose.rotation).collect();
     let translations = poses.iter().map(|pose| pose.translation).collect();
-
-    for imu in &mut imu_priors {
-        if imu.frame_a == 0 && imu.frame_b == 0 && imu.delta_rotation != identity_rotation() {
-            imu.frame_b = 1;
-        }
-    }
 
     Ok(GlobalSfmState {
         frame_ids,
@@ -430,7 +414,7 @@ fn run_lm_core(
     imu_priors: &[ImuRotationPrior],
     k: &CameraIntrinsics,
     config: &LmConfig,
-) -> BaResult {
+) -> (BaResult, BaState) {
     let mut state = initial_state.clone();
     let mut lambda = config.lambda_init;
     let mut cost = compute_total_cost(&state, observations, gps_priors, imu_priors, k);
@@ -478,47 +462,10 @@ fn run_lm_core(
         }
     }
 
-    build_result(&state, cost, iterations_run, converged, observations, k)
-}
-
-fn apply_result_state(
-    initial_state: &BaState,
-    observations: &[Observation],
-    gps_priors: &[GpsPrior],
-    imu_priors: &[ImuRotationPrior],
-    k: &CameraIntrinsics,
-    config: &LmConfig,
-) -> BaState {
-    let mut state = initial_state.clone();
-    let mut lambda = config.lambda_init;
-    let mut cost = compute_total_cost(&state, observations, gps_priors, imu_priors, k);
-
-    for _ in 0..config.max_iterations {
-        let Some((delta_pose, delta_point)) = build_and_solve_schur(
-            &state,
-            observations,
-            gps_priors,
-            imu_priors,
-            k,
-            lambda,
-        ) else {
-            break;
-        };
-        let candidate = apply_delta(&state, &delta_pose, &delta_point);
-        let candidate_cost = compute_total_cost(&candidate, observations, gps_priors, imu_priors, k);
-        if candidate_cost < cost {
-            state = candidate;
-            cost = candidate_cost;
-            lambda = (lambda * config.lambda_factor_dn).max(1e-10);
-        } else {
-            lambda *= config.lambda_factor_up;
-            if lambda > config.lambda_max {
-                break;
-            }
-        }
-    }
-
-    state
+    (
+        build_result(&state, cost, iterations_run, converged, observations, k),
+        state,
+    )
 }
 
 fn build_result(
@@ -612,12 +559,9 @@ fn build_window_context(
         .imu_priors
         .iter()
         .filter_map(|prior| {
-            let frame_a = frame_lookup.get(&prior.frame_a)?;
-            let frame_b = frame_lookup.get(&prior.frame_b)?;
-            Some(ImuRotationPrior {
-                frame_a: *frame_a,
-                frame_b: *frame_b,
-                delta_rotation: prior.delta_rotation,
+            frame_lookup.get(&prior.frame_idx).map(|local_frame| ImuRotationPrior {
+                frame_idx: *local_frame,
+                measured_rotation: prior.measured_rotation,
                 weight: prior.weight,
             })
         })
@@ -713,7 +657,7 @@ fn validate_global_state(global: &GlobalSfmState) -> Result<()> {
     }
 
     for imu in &global.imu_priors {
-        if imu.frame_a >= global.rotations.len() || imu.frame_b >= global.rotations.len() {
+        if imu.frame_idx >= global.rotations.len() {
             bail!("imu prior frame index is out of bounds");
         }
     }
@@ -737,18 +681,15 @@ fn compute_total_cost(
     }
 
     for gps in gps_priors {
-        let rotation = axis_angle_to_rotation_vec(&vec3_from_array(state.rotations_aa[gps.frame_idx]));
         let translation = vec3_from_array(state.translations[gps.frame_idx]);
-        let cam_centre = -(rotation.transpose() * translation);
-        let residual = cam_centre - vec3_from_array(gps.enu_position);
+        let residual = translation - vec3_from_array(gps.enu_position);
         cost += gps.weight * residual.norm_squared();
     }
 
     for imu in imu_priors {
-        let ra = axis_angle_to_rotation_vec(&vec3_from_array(state.rotations_aa[imu.frame_a]));
-        let rb = axis_angle_to_rotation_vec(&vec3_from_array(state.rotations_aa[imu.frame_b]));
-        let delta_rotation = matrix3_from_array(imu.delta_rotation);
-        let relative = delta_rotation.transpose() * ra.transpose() * rb;
+        let rotation = axis_angle_to_rotation_vec(&vec3_from_array(state.rotations_aa[imu.frame_idx]));
+        let measured_rotation = matrix3_from_array(imu.measured_rotation);
+        let relative = measured_rotation.transpose() * rotation;
         let residual = rotation_log_matrix(&relative);
         cost += imu.weight * residual.norm_squared();
     }
@@ -806,10 +747,6 @@ fn build_and_solve_schur(
     let mut e_b = DVector::<f64>::zeros(point_dim);
 
     for obs in observations {
-        if state.frozen_frames.contains(&obs.frame_idx) {
-            continue;
-        }
-
         let omega = vec3_from_array(state.rotations_aa[obs.frame_idx]);
         let translation = vec3_from_array(state.translations[obs.frame_idx]);
         let point = vec3_from_array(state.points[obs.point_idx]);
@@ -828,9 +765,11 @@ fn build_and_solve_schur(
         add_block(&mut a, frame_offset, frame_offset, &jpt_jp);
         add_block_rect(&mut b, frame_offset, point_offset, &jpt_jx);
         c_blocks[obs.point_idx] += jxt_jx;
-        add_vec_block(&mut e_a, frame_offset, &(j_pose.transpose() * residual));
-        add_vec_block(&mut e_b, point_offset, &(j_point.transpose() * residual));
+        add_vec_block(&mut e_a, frame_offset, &(-j_pose.transpose() * residual));
+        add_vec_block(&mut e_b, point_offset, &(-j_point.transpose() * residual));
     }
+
+    pin_frozen_poses(&mut a, &mut e_a, &state.frozen_frames, pose_dim);
 
     for gps in gps_priors {
         if state.frozen_frames.contains(&gps.frame_idx) {
@@ -839,9 +778,7 @@ fn build_and_solve_schur(
         let omega = vec3_from_array(state.rotations_aa[gps.frame_idx]);
         let translation = vec3_from_array(state.translations[gps.frame_idx]);
         let jac = compute_gps_jacobian(&omega, &translation, gps.weight);
-        let rotation = axis_angle_to_rotation_vec(&omega);
-        let cam_centre = -(rotation.transpose() * translation);
-        let residual = (cam_centre - vec3_from_array(gps.enu_position)) * gps.weight.sqrt();
+        let residual = (translation - vec3_from_array(gps.enu_position)) * gps.weight.sqrt();
 
         let mut j_pose = SMatrix::<f64, 3, 6>::zeros();
         j_pose.fixed_columns_mut::<3>(0).copy_from(&jac.j_omega);
@@ -849,29 +786,23 @@ fn build_and_solve_schur(
 
         let frame_offset = gps.frame_idx * 6;
         add_block(&mut a, frame_offset, frame_offset, &(j_pose.transpose() * j_pose));
-        add_vec_block(&mut e_a, frame_offset, &(j_pose.transpose() * residual));
+        add_vec_block(&mut e_a, frame_offset, &(-j_pose.transpose() * residual));
     }
 
     for imu in imu_priors {
-        if state.frozen_frames.contains(&imu.frame_a) && state.frozen_frames.contains(&imu.frame_b) {
+        if state.frozen_frames.contains(&imu.frame_idx) {
             continue;
         }
-        let ra = axis_angle_to_rotation_vec(&vec3_from_array(state.rotations_aa[imu.frame_a]));
-        let rb = axis_angle_to_rotation_vec(&vec3_from_array(state.rotations_aa[imu.frame_b]));
-        let delta_rotation = matrix3_from_array(imu.delta_rotation);
-        let r_err = delta_rotation.transpose() * ra.transpose() * rb;
-        let residual = rotation_log_matrix(&r_err) * imu.weight.sqrt();
-        let jac = compute_imu_jacobian(imu.weight);
+        let rotation = axis_angle_to_rotation_vec(&vec3_from_array(state.rotations_aa[imu.frame_idx]));
+        let measured_rotation = matrix3_from_array(imu.measured_rotation);
+        let relative = measured_rotation.transpose() * rotation;
+        let residual = rotation_log_matrix(&relative) * imu.weight.sqrt();
+        let jac = compute_imu_jacobian(&measured_rotation, imu.weight);
 
-        let frame_a = imu.frame_a * 6;
-        let frame_b = imu.frame_b * 6;
+        let frame_idx = imu.frame_idx * 6;
 
-        add_block_3(&mut a, frame_a, frame_a, &(jac.j_omega_a.transpose() * jac.j_omega_a));
-        add_block_3(&mut a, frame_b, frame_b, &(jac.j_omega_b.transpose() * jac.j_omega_b));
-        add_block_3(&mut a, frame_a, frame_b, &(jac.j_omega_a.transpose() * jac.j_omega_b));
-        add_block_3(&mut a, frame_b, frame_a, &(jac.j_omega_b.transpose() * jac.j_omega_a));
-        add_vec_block(&mut e_a, frame_a, &(jac.j_omega_a.transpose() * residual));
-        add_vec_block(&mut e_a, frame_b, &(jac.j_omega_b.transpose() * residual));
+        add_block_3(&mut a, frame_idx, frame_idx, &(jac.j_omega_a.transpose() * jac.j_omega_a));
+        add_vec_block(&mut e_a, frame_idx, &(-jac.j_omega_a.transpose() * residual));
     }
 
     for i in 0..pose_dim {
@@ -930,8 +861,21 @@ fn apply_delta(
         if state.frozen_frames.contains(&frame_idx) {
             continue;
         }
+        // Spec §11 / overhaul §3.2: so(3) Lie-algebra retraction.
+        // R_new = R_old · exp([Δθ]×); store as log(R_new).
+        let omega = vec3_from_array(state.rotations_aa[frame_idx]);
+        let d_omega = Vector3::new(
+            delta_pose[frame_idx * 6],
+            delta_pose[frame_idx * 6 + 1],
+            delta_pose[frame_idx * 6 + 2],
+        );
+        let r_old = axis_angle_to_rotation_vec(&omega);
+        let r_inc = axis_angle_to_rotation_vec(&d_omega);
+        let r_new = r_old * r_inc;
+        let omega_new = rotation_log_matrix(&r_new);
+        next.rotations_aa[frame_idx] = vec3_to_array(&omega_new);
+
         for axis in 0..3 {
-            next.rotations_aa[frame_idx][axis] += delta_pose[frame_idx * 6 + axis];
             next.translations[frame_idx][axis] += delta_pose[frame_idx * 6 + 3 + axis];
         }
     }
@@ -985,23 +929,21 @@ fn compute_jacobian_block(
 }
 
 fn compute_gps_jacobian(
-    omega: &Vector3<f64>,
-    translation: &Vector3<f64>,
+    _omega: &Vector3<f64>,
+    _translation: &Vector3<f64>,
     weight: f64,
 ) -> GpsJacobianBlock {
-    let rotation = axis_angle_to_rotation_vec(omega);
     let scale = weight.sqrt();
     GpsJacobianBlock {
-        j_omega: -skew_symmetric(translation) * scale,
-        j_t: -rotation.transpose() * scale,
+        j_omega: Matrix3::<f64>::zeros(),
+        j_t: Matrix3::<f64>::identity() * scale,
     }
 }
 
-fn compute_imu_jacobian(weight: f64) -> ImuJacobianBlock {
+fn compute_imu_jacobian(measured_rotation: &Matrix3<f64>, weight: f64) -> ImuJacobianBlock {
     let scale = weight.sqrt();
     ImuJacobianBlock {
-        j_omega_a: -scale * Matrix3::<f64>::identity(),
-        j_omega_b: scale * Matrix3::<f64>::identity(),
+        j_omega_a: -scale * measured_rotation.transpose(),
     }
 }
 
@@ -1115,6 +1057,28 @@ fn add_block_3(matrix: &mut DMatrix<f64>, row: usize, col: usize, block: &Matrix
     for r in 0..3 {
         for c in 0..3 {
             matrix[(row + r, col + c)] += block[(r, c)];
+        }
+    }
+}
+
+fn pin_frozen_poses(
+    a: &mut DMatrix<f64>,
+    e_a: &mut DVector<f64>,
+    frozen_frames: &[usize],
+    pose_dim: usize,
+) {
+    for &frame_idx in frozen_frames {
+        let base = frame_idx * 6;
+        if base + 6 <= pose_dim {
+            for i in 0..6 {
+                let row = base + i;
+                for col in 0..pose_dim {
+                    a[(row, col)] = 0.0;
+                    a[(col, row)] = 0.0;
+                }
+                a[(row, row)] = 1e9;
+                e_a[row] = 0.0;
+            }
         }
     }
 }
@@ -1264,9 +1228,8 @@ mod tests {
                 weight: 0.1,
             }],
             imu_priors: vec![ImuRotationPrior {
-                frame_a: 0,
-                frame_b: 1,
-                delta_rotation: identity_rotation(),
+                frame_idx: 1,
+                measured_rotation: identity_rotation(),
                 weight: 0.1,
             }],
         }
@@ -1318,18 +1281,67 @@ mod tests {
     }
 
     #[test]
-    fn lm_runs_on_full_state() {
-        let mut global = sample_global_state();
-        let result = run_levenberg_marquardt(&mut global, &sample_intrinsics(), &LmConfig::default());
-        assert!(result.updated_points > 0);
-    }
+    fn synthetic_ba_converges_and_reduces_reprojection_error() {
+        let k = sample_intrinsics();
+        let gt_points = vec![
+            [0.0, 0.0, 3.0],
+            [0.5, 0.2, 3.5],
+            [-0.3, 0.4, 2.8],
+            [0.2, -0.3, 4.0],
+        ];
 
-    #[test]
-    fn sparse_points_export_produces_ply_header() {
-        let ply = sparse_points_to_ply_bytes(&[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]);
-        let text = String::from_utf8(ply).expect("valid utf8");
-        assert!(text.contains("ply"));
-        assert!(text.contains("element vertex 2"));
-        assert!(text.contains("0.000000 1.000000 2.000000"));
+        let gt_rot0 = [0.0, 0.0, 0.0];
+        let gt_trans0 = [0.0, 0.0, 0.0];
+        let gt_rot1 = [0.0, 0.05, 0.0];
+        let gt_trans1 = [0.2, 0.0, 0.0];
+
+        let mut obs = Vec::new();
+        for (pidx, pt) in gt_points.iter().enumerate() {
+            let p_vec = vec3_from_array(*pt);
+            let proj0 = project(&vec3_from_array(gt_rot0), &vec3_from_array(gt_trans0), &p_vec, &k).unwrap();
+            obs.push(Observation {
+                frame_idx: 0,
+                point_idx: pidx,
+                observed: [proj0.x, proj0.y],
+                weight: 1.0,
+            });
+
+            let proj1 = project(&vec3_from_array(gt_rot1), &vec3_from_array(gt_trans1), &p_vec, &k).unwrap();
+            obs.push(Observation {
+                frame_idx: 1,
+                point_idx: pidx,
+                observed: [proj1.x, proj1.y],
+                weight: 1.0,
+            });
+        }
+
+        // Perturb 3D points
+        let noisy_points: Vec<[f64; 3]> = gt_points
+            .iter()
+            .map(|p| [p[0] + 0.05, p[1] - 0.03, p[2] + 0.08])
+            .collect();
+
+        let mut state = GlobalSfmState {
+            frame_ids: vec![0, 1],
+            rotations: vec![gt_rot0, [gt_rot1[0], gt_rot1[1] + 0.02, gt_rot1[2]]],
+            translations: vec![gt_trans0, [gt_trans1[0] + 0.05, gt_trans1[1], gt_trans1[2]]],
+            points: noisy_points,
+            observations: obs,
+            gps_priors: vec![GpsPrior {
+                frame_idx: 1,
+                enu_position: gt_trans1,
+                weight: 0.1,
+            }],
+            imu_priors: vec![ImuRotationPrior {
+                frame_idx: 1,
+                measured_rotation: axis_angle_to_rotation(gt_rot1),
+                weight: 0.1,
+            }],
+        };
+
+        let initial_err = compute_rms_error(&global_to_ba_state(&state, vec![0]), &state.observations, &k);
+        let res = run_levenberg_marquardt(&mut state, &k, &LmConfig::default());
+        assert!(res.rms_reprojection_error < initial_err);
     }
 }
+

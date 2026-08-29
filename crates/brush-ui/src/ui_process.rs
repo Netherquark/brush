@@ -221,9 +221,7 @@ impl UiProcess {
         let mut process = process;
 
         let egui_ctx = self.read().ui_ctx.clone();
- 
-        let egui_ctx = self.read().ui_ctx.clone();
- 
+
         log::info!("[BRUSH_FLOW] connect_to_process: Spawning background task.");
         task::spawn(async move {
             log::info!("[BRUSH_FLOW] Async process message handler task started.");

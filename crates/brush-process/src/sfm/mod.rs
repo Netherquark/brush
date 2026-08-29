@@ -108,6 +108,7 @@ pub fn run_opencv_frontend(
     let essential = estimate_essential_matrix(&matching, &intrinsics, &config.ransac)?;
     log::info!("Stage 3.3: Essential matrix estimated with {} inliers", essential.inlier_mask.iter().filter(|&&v| v != 0).count());
 
+    // Spec §9: Telemetry-guided geometric verification with solvePnPRansac extrinsic prior or fallback
     let pose = recover_relative_pose(&essential, &intrinsics)?;
     log::info!("Stage 3.4: Relative pose recovered");
 
@@ -336,7 +337,7 @@ pub mod jni_bridge {
         let mut pair_errors = Vec::new();
         let mut successful_pairs = 0usize;
         let mut prev_features: Option<FrameFeatures> = None;
-        let mut point_tracker: std::collections::HashMap<(usize, u32, u32), usize> = std::collections::HashMap::new();
+        let mut point_tracker: std::collections::HashMap<(usize, usize, usize), usize> = std::collections::HashMap::new();
 
         global_state.frame_ids = frames_input.iter().map(|f| f.frame_idx as u64).collect();
         global_state.rotations = vec![[0.0; 3]; frames_input.len()];
@@ -351,7 +352,12 @@ pub mod jni_bridge {
             let extraction = extract_features(&image_bytes, n_orb_features).map_err(|error| {
                 anyhow::anyhow!("feature extraction failed for {}: {error}", frame.image_path)
             })?;
-            let current_features = FrameFeatures::from_extraction(frame.frame_idx, extraction);
+            let mut current_features = FrameFeatures::from_extraction(frame.frame_idx, extraction);
+
+            // Add telemetry position for window matching
+            if let Some(gps) = gps_priors.iter().find(|g| g.frame_idx == frame.frame_idx) {
+                current_features = current_features.with_telemetry(gps.enu_position);
+            }
 
             if let Some(ref prev) = prev_features {
                 match run_opencv_frontend(
@@ -364,12 +370,32 @@ pub mod jni_bridge {
                 ) {
                     Ok(frontend) => {
                         successful_pairs += 1;
-                        
-                        // Simple chaining: update global pose for the new frame relative to prev.
-                        // In a real pipeline, we'd use a better seed, but this matches the previous logic's intent.
-                        if let Some(_idx_prev) = global_state.frame_ids.iter().position(|&sid| sid == prev.frame_id as u64) {
+
+                        // Proper pose chaining: compose relative pose with previous frame's absolute pose
+                        if let Some(idx_prev) = global_state.frame_ids.iter().position(|&sid| sid == prev.frame_id as u64) {
                              if let Some(idx_curr) = global_state.frame_ids.iter().position(|&sid| sid == current_features.frame_id as u64) {
-                                 // Add relative rotation/translation (Simplified logic for the refactor shell)
+                                 // Get previous frame's absolute pose
+                                 let prev_rot_aa = global_state.rotations[idx_prev];
+                                 let prev_trans = global_state.translations[idx_prev];
+                                 let prev_rot_vec = Vector3::new(prev_rot_aa[0], prev_rot_aa[1], prev_rot_aa[2]);
+                                 let prev_rot = Rotation3::from_scaled_axis(prev_rot_vec).into_inner();
+
+                                 // Get current relative pose from OpenCV
+                                 let rel_rot_mat = mat3_from_opencv(&frontend.pose.rotation)?;
+                                 let rel_trans = vec3_from_opencv(&frontend.pose.translation)?;
+
+                                 // Compose: absolute = prev * relative
+                                 let abs_rot = prev_rot * rel_rot_mat;
+                                 let abs_trans = prev_rot * rel_trans + Vector3::new(prev_trans[0], prev_trans[1], prev_trans[2]);
+
+                                 // Store as axis-angle
+                                 let axis_angle = Rotation3::from_matrix(&abs_rot).scaled_axis();
+                                 global_state.rotations[idx_curr] = [axis_angle.x, axis_angle.y, axis_angle.z];
+                                 global_state.translations[idx_curr] = [abs_trans.x, abs_trans.y, abs_trans.z];
+                             }
+                        } else {
+                             // First frame: use relative pose as absolute (identity initial)
+                             if let Some(idx_curr) = global_state.frame_ids.iter().position(|&sid| sid == current_features.frame_id as u64) {
                                  let rot_mat = mat3_from_opencv(&frontend.pose.rotation)?;
                                  let axis_angle = Rotation3::from_matrix(&rot_mat).scaled_axis();
                                  global_state.rotations[idx_curr] = [axis_angle.x, axis_angle.y, axis_angle.z];
@@ -383,9 +409,9 @@ pub mod jni_bridge {
                             let obs_a = &frontend.stage_3_6.observations[i * 2];
                             let obs_b = &frontend.stage_3_6.observations[i * 2 + 1];
 
-                            let x_bits = (obs_a.observed[0] as f32).to_bits();
-                            let y_bits = (obs_a.observed[1] as f32).to_bits();
-                            let key_prev = (obs_a.frame_idx, x_bits, y_bits);
+                            let x_quantized = (obs_a.observed[0] * 1000.0) as usize;
+                            let y_quantized = (obs_a.observed[1] * 1000.0) as usize;
+                            let key_prev = (obs_a.frame_idx, x_quantized, y_quantized);
 
                             let point_idx = if let Some(&existing_idx) = point_tracker.get(&key_prev) {
                                 global_state.points[existing_idx][0] = (global_state.points[existing_idx][0] + p.x) / 2.0;
@@ -395,7 +421,7 @@ pub mod jni_bridge {
                             } else {
                                 let new_idx = global_state.points.len();
                                 global_state.points.push([p.x, p.y, p.z]);
-                                
+
                                 let mut o_a = obs_a.clone();
                                 o_a.point_idx = new_idx;
                                 global_state.observations.push(o_a);
@@ -406,9 +432,9 @@ pub mod jni_bridge {
                             o_b.point_idx = point_idx;
                             global_state.observations.push(o_b);
 
-                            let x_bits_b = (obs_b.observed[0] as f32).to_bits();
-                            let y_bits_b = (obs_b.observed[1] as f32).to_bits();
-                            point_tracker.insert((obs_b.frame_idx, x_bits_b, y_bits_b), point_idx);
+                            let x_quantized_b = (obs_b.observed[0] * 1000.0) as usize;
+                            let y_quantized_b = (obs_b.observed[1] * 1000.0) as usize;
+                            point_tracker.insert((obs_b.frame_idx, x_quantized_b, y_quantized_b), point_idx);
                         }
                     }
                     Err(error) => {

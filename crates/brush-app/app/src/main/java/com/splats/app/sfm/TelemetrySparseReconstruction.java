@@ -83,8 +83,8 @@ public final class TelemetrySparseReconstruction {
             gps.put(gpsJson(i, frame.record));
         }
 
-        for (int i = 0; i < framesLoaded.size() - 1; i++) {
-            imu.put(imuJson(i, framesLoaded.get(i), i + 1, framesLoaded.get(i + 1)));
+        for (int i = 0; i < framesLoaded.size(); i++) {
+            imu.put(imuJson(i, framesLoaded.get(i)));
         }
 
         String cfg = (nativeConfigJson != null && !nativeConfigJson.isEmpty()) ? nativeConfigJson : "{}";
@@ -159,12 +159,10 @@ public final class TelemetrySparseReconstruction {
         return gps;
     }
 
-    private static JSONObject imuJson(int frameAIndex, FrameData a, int frameBIndex, FrameData b) throws Exception {
-        double[][] delta = matMul(transpose(a.cameraPose.rotationWorldToCamera), b.cameraPose.rotationWorldToCamera);
+    private static JSONObject imuJson(int frameIndex, FrameData frameData) throws Exception {
         JSONObject imu = new JSONObject();
-        imu.put("frame_a", frameAIndex);
-        imu.put("frame_b", frameBIndex);
-        imu.put("delta_rotation", matrixToJson(delta));
+        imu.put("frame_idx", frameIndex);
+        imu.put("measured_rotation", matrixToJson(frameData.cameraPose.rotationWorldToCamera));
         imu.put("weight", 0.05);
         return imu;
     }

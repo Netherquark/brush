@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case", default)]
 pub struct TrainConfig {
     /// Total number of steps to train for.
-    #[arg(long, help_heading = "Training options", default_value = "30000")]
+    #[arg(long, help_heading = "Training options", default_value = "2000")]
     pub total_steps: u32,
 
     #[arg(long, help_heading = "Training options")]
@@ -49,7 +49,7 @@ pub struct TrainConfig {
     pub lr_rotation: f64,
 
     /// Max nr. of splats. This is an upper bound, but the actual final number of splats might be lower than this.
-    #[arg(long, help_heading = "Refine options", default_value = "10000000")]
+    #[arg(long, help_heading = "Refine options", default_value = "100000")]
     pub max_splats: u32,
 
     /// Frequency of 'refinement' where gaussians are replaced and densified. This should

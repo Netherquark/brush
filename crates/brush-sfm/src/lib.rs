@@ -1,4 +1,12 @@
+pub mod coords;
 pub mod sfm;
+pub mod telemetry;
+
+pub use coords::{opencv_c2w_to_nerf_c2w, wgs84_to_enu};
+pub use telemetry::{
+    KeyframeCandidate, KeyframeConfig, KeyframeTrigger, RawTelemetryRecord, ValidatedRecord,
+    select_keyframes, validate_telemetry_records, yaw_diff_deg,
+};
 
 pub use sfm::stage_3_7_bundle_adjustment::{
     BaResult,
@@ -22,3 +30,7 @@ pub use sfm::stage_3_7_bundle_adjustment::{
 
 #[cfg(feature = "jni-support")]
 pub use sfm::stage_3_7_bundle_adjustment::jni_bridge::*;
+
+#[cfg(feature = "jni-support")]
+pub use telemetry::jni_bridge::*;
+

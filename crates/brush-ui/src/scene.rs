@@ -212,7 +212,7 @@ impl ScenePanel {
             self.android_orb_keypoints = 512;
         }
         if self.android_ba_window == 0 {
-            self.android_ba_window = 5;
+            self.android_ba_window = 15;
         }
         if self.android_lm_iterations == 0 {
             self.android_lm_iterations = 50;
@@ -244,7 +244,7 @@ impl ScenePanel {
             max_frame_dimension: self.android_max_frame_dimension.max(144).min(720),
             frame_count: self.android_frame_count.max(1).min(100),
             orb_keypoints: self.android_orb_keypoints.max(50).min(1000),
-            ba_window_size: self.android_ba_window.max(2).min(5),
+            ba_window_size: self.android_ba_window.max(2).min(50),
             lm_max_iterations: self.android_lm_iterations.max(1).min(2000),
             train_total_steps: self.android_train_steps.max(1).min(2000),
             train_max_splats: self.android_train_max_splats.max(1000).min(100_000),
@@ -398,7 +398,7 @@ impl ScenePanel {
             ui.add(
                 Slider::new(&mut self.android_orb_keypoints, 50..=1000).text("ORB keypoints"),
             );
-            ui.add(Slider::new(&mut self.android_ba_window, 2..=5).text("BA window"));
+            ui.add(Slider::new(&mut self.android_ba_window, 2..=50).text("BA window"));
             ui.add(
                 Slider::new(&mut self.android_lm_iterations, 1..=2000).text("BA LM iterations"),
             );

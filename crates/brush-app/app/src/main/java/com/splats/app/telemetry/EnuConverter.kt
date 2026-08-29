@@ -47,6 +47,10 @@ internal object EnuConverter {
         )
 
         val records = rows.map { row ->
+            // Spec formula matching brush_sfm::coords::wgs84_to_enu:
+            // E = (lon - lon0) * cos(lat0 * π / 180) * 111320.0
+            // N = (lat - lat0) * 111320.0
+            // U = alt - alt0
             val enuE = (row.lon - lon0) * cosLat * METRES_PER_DEGREE
             val enuN = (row.lat - lat0) * METRES_PER_DEGREE
             val enuU = row.altM - alt0

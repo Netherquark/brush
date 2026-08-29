@@ -53,12 +53,7 @@ pub fn export_sfm_results(
         let c2w_cv = w2c.try_inverse().ok_or_else(|| anyhow::anyhow!("Matrix inversion failed for frame {}", i))?;
 
         // OpenCV C2W (x-right, y-down, z-forward) -> NeRF C2W (x-right, y-up, z-back)
-        // This involves flipping the y and z axes.
-        let mut c2w_nerf = c2w_cv;
-        for r in 0..3 {
-            c2w_nerf[(r, 1)] *= -1.0; // Flip Y column
-            c2w_nerf[(r, 2)] *= -1.0; // Flip Z column
-        }
+        let c2w_nerf = brush_sfm::opencv_c2w_to_nerf_c2w(c2w_cv);
 
         let mut matrix_arr = [[0.0f32; 4]; 4];
         for r in 0..4 {
@@ -68,10 +63,11 @@ pub fn export_sfm_results(
         }
 
         let file_path = if let Some(path) = frame_paths.get(i) {
-            Path::new(path).file_name()
+            Path::new(path)
+                .file_stem()
                 .and_then(|n| n.to_str())
-                .unwrap_or("frame.jpg")
-                .to_string()
+                .unwrap_or(&format!("frame_{:05}", i))
+                .to_string() + ".jpg"
         } else {
             format!("frame_{:05}.jpg", i)
         };

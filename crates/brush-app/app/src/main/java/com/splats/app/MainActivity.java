@@ -740,7 +740,7 @@ public class MainActivity extends GameActivity {
         int maxFrameDimension = 360;
         int frameCount = 50;
         int orbKeypoints = 512;
-        int baWindowSize = 5;
+        int baWindowSize = 15;
         int lmMaxIterations = 50;
         double kfDistanceM = 2.0;
         double kfYawDeg = 8.0;
@@ -761,7 +761,7 @@ public class MainActivity extends GameActivity {
                 c.maxFrameDimension = clamp(o.optInt("max_frame_dimension", c.maxFrameDimension), 144, 720);
                 c.frameCount = clamp(o.optInt("frame_count", c.frameCount), 1, 100);
                 c.orbKeypoints = clamp(o.optInt("orb_keypoints", c.orbKeypoints), 50, 1000);
-                c.baWindowSize = clamp(o.optInt("ba_window_size", c.baWindowSize), 2, 5);
+                c.baWindowSize = clamp(o.optInt("ba_window_size", c.baWindowSize), 2, 50);
                 c.lmMaxIterations = clamp(o.optInt("lm_max_iterations", c.lmMaxIterations), 1, 2000);
                 c.kfDistanceM = o.optDouble("kf_distance_m", c.kfDistanceM);
                 c.kfYawDeg = o.optDouble("kf_yaw_deg", c.kfYawDeg);

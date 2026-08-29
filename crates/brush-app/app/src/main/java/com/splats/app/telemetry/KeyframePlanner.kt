@@ -10,15 +10,28 @@ import kotlin.math.roundToInt
 object KeyframePlanner {
 
     /**
-     * @param maxOutputFrames caps output length (uniform subsample if more keyframes are selected).
+     * Result of a single-pass plan: keyframe timestamps AND the pre-parsed
+     * validated+oriented rows so [TelemetryPreprocessor] can skip re-parsing.
+     * Overhaul §3.3: single-pass keyframe planning.
+     */
+    data class KeyframePlan(
+        val keyframeTimesUs: LongArray,
+        /** Pre-parsed, validated, gap-interpolated, orientation-fused rows. */
+        val orientedRows: List<TelRecord>,
+        val videoStartUs: Long,
+    )
+
+    /**
+     * Single-pass variant: parses CSV once, returns both timestamps and oriented rows.
+     * Pass [KeyframePlan.orientedRows] to [TelemetryPreprocessor] to avoid re-parse.
      */
     @JvmStatic
-    fun videoRelativeKeyframeTimesUs(
+    fun plan(
         csvFile: File,
         videoFile: File,
-        config: KeyframeSelectionConfig,
-        maxOutputFrames: Int
-    ): LongArray {
+        config: KeyframeSelectionConfig = KeyframeSelectionConfig(),
+        maxOutputFrames: Int = 100,
+    ): KeyframePlan {
         require(maxOutputFrames >= 1) { "maxOutputFrames must be >= 1" }
 
         val parsedRows = CsvParser.parse(csvFile)
@@ -31,7 +44,8 @@ object KeyframePlanner {
         }
 
         val validated = RowValidator.validate(clippedRows)
-        if (validated.rows.isEmpty()) return longArrayOf()
+        if (validated.rows.isEmpty()) return KeyframePlan(longArrayOf(), emptyList(), targetStartUs)
+
         val (_, enuRecords) = EnuConverter.convert(validated.rows)
         val oriented = OrientationFusionEngine.process(GapInterpolator.interpolate(enuRecords)).records
 
@@ -40,8 +54,23 @@ object KeyframePlanner {
             (cands[i].timestampUs - targetStartUs).coerceAtLeast(0L)
         }
 
-        return subsampleUniform(rel, maxOutputFrames)
+        return KeyframePlan(
+            keyframeTimesUs = subsampleUniform(rel, maxOutputFrames),
+            orientedRows = oriented,
+            videoStartUs = targetStartUs,
+        )
     }
+
+    /**
+     * @param maxOutputFrames caps output length (uniform subsample if more keyframes are selected).
+     */
+    @JvmStatic
+    fun videoRelativeKeyframeTimesUs(
+        csvFile: File,
+        videoFile: File,
+        config: KeyframeSelectionConfig,
+        maxOutputFrames: Int
+    ): LongArray = plan(csvFile, videoFile, config, maxOutputFrames).keyframeTimesUs
 
     private fun subsampleUniform(sortedTimes: LongArray, max: Int): LongArray {
         if (sortedTimes.isEmpty()) return sortedTimes
