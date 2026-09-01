@@ -155,33 +155,33 @@ mod visualize_tools_impl {
             eval: EvalSample<B>,
         ) -> Result<()> {
             if self.rec.is_enabled() {
-                fn tensor_into_image(data: TensorData) -> image::DynamicImage {
+                fn tensor_into_image(data: TensorData) -> Result<image::DynamicImage> {
                     let [h, w, c] = [data.shape[0], data.shape[1], data.shape[2]];
 
                     let img: image::DynamicImage = match data.dtype {
                         DType::F32 => {
-                            let data = data.into_vec::<f32>().expect("Wrong type");
+                            let data = data.into_vec::<f32>().map_err(|e| anyhow::anyhow!("Wrong type: {e:?}"))?;
                             if c == 3 {
                                 Rgb32FImage::from_raw(w as u32, h as u32, data)
-                                    .expect("Failed to create image from tensor")
+                                    .ok_or_else(|| anyhow::anyhow!("Failed to create image from tensor"))?
                                     .into()
                             } else if c == 4 {
                                 Rgba32FImage::from_raw(w as u32, h as u32, data)
-                                    .expect("Failed to create image from tensor")
+                                    .ok_or_else(|| anyhow::anyhow!("Failed to create image from tensor"))?
                                     .into()
                             } else {
-                                panic!("Unsupported number of channels: {c}");
+                                anyhow::bail!("Unsupported number of channels: {c}");
                             }
                         }
-                        _ => panic!("unsupported dtype {:?}", data.dtype),
+                        _ => anyhow::bail!("unsupported dtype {:?}", data.dtype),
                     };
 
-                    img
+                    Ok(img)
                 }
 
                 self.rec.set_time_sequence("iterations", iter);
 
-                let eval_render = tensor_into_image(eval.rendered.clone().into_data_async().await?);
+                let eval_render = tensor_into_image(eval.rendered.clone().into_data_async().await?)?;
                 let rendered = eval_render.into_rgb8();
 
                 let [w, h] = [rendered.width(), rendered.height()];

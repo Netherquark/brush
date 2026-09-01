@@ -16,6 +16,8 @@ pub enum PickFileError {
     NoFileSelected,
     #[error("No directory was selected")]
     NoDirectorySelected,
+    #[error("Operation not supported on Android platform")]
+    UnsupportedPlatform,
     #[error("IO error while saving file.")]
     IoError(#[from] std::io::Error),
 }
@@ -26,7 +28,6 @@ pub struct PickedFile<R: AsyncRead + Unpin> {
     pub reader: R,
 }
 
-/// Pick a file and return the name & reader of the file.
 /// Pick a file and return the name & reader of the file.
 pub async fn pick_file() -> Result<PickedFile<impl AsyncRead + Unpin>, PickFileError> {
     #[cfg(all(not(target_os = "android"), not(target_family = "wasm")))]
@@ -72,7 +73,8 @@ pub async fn pick_directory() -> Result<PathBuf, PickFileError> {
 
     #[cfg(target_os = "android")]
     {
-        panic!("No picking directories on Android yet.")
+        log::warn!("Directory picker is not supported on Android");
+        Err(PickFileError::UnsupportedPlatform)
     }
 }
 
@@ -102,6 +104,7 @@ pub async fn save_file(default_name: &str, data: Vec<u8>) -> Result<(), PickFile
     {
         let _ = default_name;
         let _ = data;
-        panic!("No saving on Android yet.")
+        log::warn!("File saving is not supported directly on Android");
+        Err(PickFileError::UnsupportedPlatform)
     }
 }

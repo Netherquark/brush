@@ -9,12 +9,31 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jni::sys::
     let vm_ref = Arc::new(vm);
     rrfd::android::jni_initialize(vm_ref.clone());
 
-    let mut env = vm_ref.get_env().expect("Cannot get JNIEnv");
-    let class = env.find_class("com/splats/app/MainActivity").expect("Failed to find MainActivity");
-    *MAIN_ACTIVITY_CLASS.write().unwrap() = Some(env.new_global_ref(&class).unwrap());
+    let mut env = match vm_ref.get_env() {
+        Ok(e) => e,
+        Err(err) => {
+            log::error!("JNI_OnLoad: get_env failed: {err:?}");
+            return jni::sys::JNI_ERR;
+        }
+    };
+    let class = match env.find_class("com/splats/app/MainActivity") {
+        Ok(c) => c,
+        Err(err) => {
+            log::error!("JNI_OnLoad: find_class MainActivity failed: {err:?}");
+            return jni::sys::JNI_ERR;
+        }
+    };
+    let global_class = match env.new_global_ref(&class) {
+        Ok(g) => g,
+        Err(err) => {
+            log::error!("JNI_OnLoad: new_global_ref failed: {err:?}");
+            return jni::sys::JNI_ERR;
+        }
+    };
+    *MAIN_ACTIVITY_CLASS.write().unwrap_or_else(|e| e.into_inner()) = Some(global_class);
 
     // Cache method IDs
-    let mut cache = JNI_METHOD_CACHE.write().unwrap();
+    let mut cache = JNI_METHOD_CACHE.write().unwrap_or_else(|e| e.into_inner());
     cache.choose_mp4 = env.get_static_method_id(&class, "chooseMp4", "()V").ok();
     cache.extract_frames = env.get_static_method_id(&class, "extractFrames", "(Ljava/lang/String;)V").ok();
     cache.choose_csv = env.get_static_method_id(&class, "chooseCsv", "()V").ok();
@@ -109,7 +128,7 @@ pub unsafe extern "system" fn Java_com_splats_app_MainActivity_notifyPlatformEve
             }
         };
 
-        if let Some(sender) = PLATFORM_EVENT_SENDER.read().unwrap().as_ref() {
+        if let Some(sender) = PLATFORM_EVENT_SENDER.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
             let _: Result<(), _> = sender.send(event);
         }
     })
@@ -133,7 +152,7 @@ where
         },
     };
 
-    let class_ref = MAIN_ACTIVITY_CLASS.read().unwrap();
+    let class_ref = MAIN_ACTIVITY_CLASS.read().unwrap_or_else(|e| e.into_inner());
     let Some(class_global) = class_ref.as_ref() else {
         log::error!("MainActivity class global ref not found");
         return None;
@@ -155,7 +174,7 @@ where
 fn call_java_static(method_name: &str) {
     with_attached_env(|env, class| {
         let method_id = {
-            let cache = JNI_METHOD_CACHE.read().unwrap();
+            let cache = JNI_METHOD_CACHE.read().unwrap_or_else(|e| e.into_inner());
             match method_name {
                 "chooseMp4" => cache.choose_mp4.as_ref(),
                 "chooseCsv" => cache.choose_csv.as_ref(),
@@ -202,7 +221,7 @@ fn call_java_static_string(method_name: &str, arg: &str) {
         };
 
         let method_id = {
-            let cache = JNI_METHOD_CACHE.read().unwrap();
+            let cache = JNI_METHOD_CACHE.read().unwrap_or_else(|e| e.into_inner());
             match method_name {
                 "extractFrames" => cache.extract_frames.as_ref(),
                 "runTrain" => cache.run_train.as_ref(),
@@ -245,7 +264,7 @@ fn call_java_static_string(method_name: &str, arg: &str) {
 fn call_java_static_return_string(method_name: &str) -> Option<String> {
     with_attached_env(|env, class| {
         let method_id = {
-            let cache = JNI_METHOD_CACHE.read().unwrap();
+            let cache = JNI_METHOD_CACHE.read().unwrap_or_else(|e| e.into_inner());
             match method_name {
                 "getDeviceModel" => cache.get_device_model.as_ref(),
                 _ => None,
@@ -298,13 +317,16 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
 
     startup();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap();
+    else {
+        log::error!("Failed to create multi-thread tokio runtime in android_main");
+        return;
+    };
 
     runtime.block_on(async move {
-        eframe::run_native(
+        let _ = eframe::run_native(
             "Brush",
             eframe::NativeOptions {
                 // Build app display.
@@ -320,7 +342,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
                 {
                     let ctx = app.context();
                     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-                    *PLATFORM_EVENT_SENDER.write().unwrap() = Some(sender);
+                    *PLATFORM_EVENT_SENDER.write().unwrap_or_else(|e| e.into_inner()) = Some(sender);
 
                     let ctx_clone = ctx.clone();
                     tokio::spawn(async move {
