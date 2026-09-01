@@ -165,25 +165,25 @@ pub mod jni_bridge {
     #[derive(Debug, Deserialize, Default)]
     pub(crate) struct FrontendJniConfig {
         #[serde(default)]
-        max_hamming_distance: Option<f32>,
+        pub(crate) max_hamming_distance: Option<f32>,
         #[serde(default)]
-        max_matches: Option<usize>,
+        pub(crate) max_matches: Option<usize>,
         #[serde(default)]
-        ransac_probability: Option<f64>,
+        pub(crate) ransac_probability: Option<f64>,
         #[serde(default)]
-        ransac_threshold_px: Option<f64>,
+        pub(crate) ransac_threshold_px: Option<f64>,
         #[serde(default)]
-        ransac_max_iters: Option<i32>,
+        pub(crate) ransac_max_iters: Option<i32>,
         #[serde(default)]
-        min_depth: Option<f64>,
+        pub(crate) min_depth: Option<f64>,
         #[serde(default)]
-        max_depth: Option<f64>,
+        pub(crate) max_depth: Option<f64>,
         #[serde(default)]
-        orb_keypoints: Option<i32>,
+        pub(crate) orb_keypoints: Option<i32>,
         #[serde(default)]
-        ba_window_size: Option<usize>,
+        pub(crate) ba_window_size: Option<usize>,
         #[serde(default)]
-        lm_max_iterations: Option<u32>,
+        pub(crate) lm_max_iterations: Option<u32>,
     }
 
 
@@ -476,6 +476,7 @@ pub mod jni_bridge {
 mod tests {
     use super::jni_bridge::*;
     use super::*;
+    use brush_sfm::SlidingWindowConfig;
 
     #[test]
     fn test_config_parsing_full() {

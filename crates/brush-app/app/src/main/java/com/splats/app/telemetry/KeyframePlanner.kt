@@ -1,5 +1,6 @@
 package com.splats.app.telemetry
 
+import android.util.Log
 import java.io.File
 import kotlin.math.roundToInt
 
@@ -34,31 +35,36 @@ object KeyframePlanner {
     ): KeyframePlan {
         require(maxOutputFrames >= 1) { "maxOutputFrames must be >= 1" }
 
-        val parsedRows = CsvParser.parse(csvFile)
-        val targetStartUs = readVideoFileStartTimeUs(videoFile)
-            ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)
-        val clippedRows = if (targetStartUs > 0L) {
-            parsedRows.filter { it.timestampUs >= targetStartUs }
-        } else {
-            parsedRows
+        return try {
+            val parsedRows = CsvParser.parse(csvFile)
+            val targetStartUs = readVideoFileStartTimeUs(videoFile)
+                ?: CsvParser.parseStartTimeFromFilename(videoFile.name, parsedRows)
+            val clippedRows = if (targetStartUs > 0L) {
+                parsedRows.filter { it.timestampUs >= targetStartUs }
+            } else {
+                parsedRows
+            }
+
+            val validated = RowValidator.validate(clippedRows)
+            if (validated.rows.isEmpty()) return KeyframePlan(longArrayOf(), emptyList(), targetStartUs)
+
+            val (_, enuRecords) = EnuConverter.convert(validated.rows)
+            val oriented = OrientationFusionEngine.process(GapInterpolator.interpolate(enuRecords)).records
+
+            val cands = selectKeyframes(oriented, config)
+            val rel = LongArray(cands.size) { i ->
+                (cands[i].timestampUs - targetStartUs).coerceAtLeast(0L)
+            }
+
+            KeyframePlan(
+                keyframeTimesUs = subsampleUniform(rel, maxOutputFrames),
+                orientedRows = oriented,
+                videoStartUs = targetStartUs,
+            )
+        } catch (e: Exception) {
+            Log.e("KeyframePlanner", "Telemetry planning failed for ${videoFile.name}: ${e.message}")
+            KeyframePlan(longArrayOf(), emptyList(), 0L)
         }
-
-        val validated = RowValidator.validate(clippedRows)
-        if (validated.rows.isEmpty()) return KeyframePlan(longArrayOf(), emptyList(), targetStartUs)
-
-        val (_, enuRecords) = EnuConverter.convert(validated.rows)
-        val oriented = OrientationFusionEngine.process(GapInterpolator.interpolate(enuRecords)).records
-
-        val cands = selectKeyframes(oriented, config)
-        val rel = LongArray(cands.size) { i ->
-            (cands[i].timestampUs - targetStartUs).coerceAtLeast(0L)
-        }
-
-        return KeyframePlan(
-            keyframeTimesUs = subsampleUniform(rel, maxOutputFrames),
-            orientedRows = oriented,
-            videoStartUs = targetStartUs,
-        )
     }
 
     /**

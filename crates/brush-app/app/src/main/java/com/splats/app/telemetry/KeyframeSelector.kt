@@ -84,7 +84,7 @@ fun selectKeyframes(
             continue
         }
 
-        val dist   = haversineMetres(lastLat, lastLon, row.lat, row.lon)
+        val dist   = haversineMetres(lastLat, lastLon!!, row.lat, row.lon)
         val yawD   = yawDiffDeg(lastYaw!!, row.yawDeg)
         val pitchD = abs(row.gimbalPitch - lastPitch!!)
         val timeD  = row.timestampUs - lastKeyframeUs!!

@@ -54,6 +54,18 @@ use burn_cubecl::cubecl::Runtime;
 use burn_wgpu::WgpuRuntime;
 use tokio_stream::{Stream, StreamExt};
 
+use crate::{message::ProcessMessage, slot::Slot};
+
+pub trait ProcessStream: Stream<Item = Result<ProcessMessage, Error>> + SendNotWasm {}
+impl<T> ProcessStream for T where T: Stream<Item = Result<ProcessMessage, Error>> + SendNotWasm {}
+
+pub struct RunningProcess {
+    pub stream: Pin<Box<dyn ProcessStream>>,
+    pub splat_view: Slot<Splats<MainBackend>>,
+}
+
+use tokio::sync::SetOnce;
+
 fn burn_options() -> RuntimeOptions {
     RuntimeOptions {
         tasks_max: 64,
@@ -68,7 +80,16 @@ pub async fn burn_init_setup() -> WgpuDevice {
     WgpuDevice::DefaultDevice
 }
 
+static DEVICE: SetOnce<WgpuDevice> = SetOnce::const_new();
+static MAX_BUFFER_SIZE: SetOnce<u64> = SetOnce::const_new();
+
+pub(crate) fn connect_device(device: WgpuDevice) {
+    DEVICE.set(device).unwrap();
+}
+
 pub fn burn_init_device(adapter: Adapter, device: Device, queue: Queue) -> WgpuDevice {
+    let max_buffer_size = adapter.limits().max_buffer_size;
+    let _ = MAX_BUFFER_SIZE.set(max_buffer_size);
     let setup = burn_wgpu::WgpuSetup {
         instance: wgpu::Instance::new(&wgpu::InstanceDescriptor::default()), // unused... need to fix this in Burn.
         adapter,
@@ -79,24 +100,6 @@ pub fn burn_init_device(adapter: Adapter, device: Device, queue: Queue) -> WgpuD
     let burn = burn_wgpu::init_device(setup, burn_options());
     connect_device(burn.clone());
     burn
-}
-
-use crate::{message::ProcessMessage, slot::Slot};
-
-pub trait ProcessStream: Stream<Item = Result<ProcessMessage, Error>> + SendNotWasm {}
-impl<T> ProcessStream for T where T: Stream<Item = Result<ProcessMessage, Error>> + SendNotWasm {}
-
-pub struct RunningProcess {
-    pub stream: Pin<Box<dyn ProcessStream>>,
-    pub splat_view: Slot<Splats<MainBackend>>,
-}
-
-use tokio::sync::SetOnce;
-
-static DEVICE: SetOnce<WgpuDevice> = SetOnce::const_new();
-
-pub(crate) fn connect_device(device: WgpuDevice) {
-    DEVICE.set(device).unwrap();
 }
 
 /// Create a running process from a datasource and args.
@@ -191,6 +194,34 @@ pub fn create_process<
                 while let Some(message) = splat_stream.next().await {
                     let message = message?;
                     log::info!("[BRUSH_FLOW] create_process: Splat frame received and parsed.");
+
+                    if let Some(&max_buf) = MAX_BUFFER_SIZE.get() {
+                        let n_splats = message.data.num_splats() as u64;
+                        let means_size = n_splats * 3 * 4;
+                        let rot_size = n_splats * 4 * 4;
+                        let scale_size = n_splats * 3 * 4;
+                        let opac_size = n_splats * 4;
+                        let sh_coeffs_len = message
+                            .data
+                            .sh_coeffs
+                            .as_ref()
+                            .map_or(n_splats * 3, |c| c.len() as u64);
+                        let sh_size = sh_coeffs_len * 4;
+
+                        let max_req = means_size
+                            .max(rot_size)
+                            .max(scale_size)
+                            .max(opac_size)
+                            .max(sh_size);
+
+                        if max_req > max_buf {
+                            anyhow::bail!(
+                                "Splat buffer ({:.1} MB) exceeds device limit ({:.1} MB); try subsampling",
+                                max_req as f64 / (1024.0 * 1024.0),
+                                max_buf as f64 / (1024.0 * 1024.0)
+                            );
+                        }
+                    }
 
                     let mode = message.meta.render_mode.unwrap_or(SplatRenderMode::Default);
                     let splats = message.data.into_splats(&device, mode);

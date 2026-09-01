@@ -251,6 +251,7 @@ public class VideoFrameExtractor {
         if (context instanceof android.app.Activity) {
             ((android.app.Activity) context).runOnUiThread(() -> {
                 if (dialog != null) dialog.dismiss();
+                Log.i(TAG, "Toast: " + msg);
                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show();
                 if (callback != null) callback.onFinished();
             });
@@ -261,7 +262,9 @@ public class VideoFrameExtractor {
         if (context instanceof android.app.Activity) {
             ((android.app.Activity) context).runOnUiThread(() -> {
                 if (dialog != null) dialog.dismiss();
-                Toast.makeText(context, "Extraction failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                String msg = "Extraction failed: " + e.getMessage();
+                Log.i(TAG, "Toast: " + msg);
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show();
                 if (callback != null) callback.onFailure(e);
             });
         }

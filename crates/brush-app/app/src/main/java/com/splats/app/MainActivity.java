@@ -156,6 +156,11 @@ public class MainActivity extends GameActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CoroutineScope telemetryScope;
     private TelemetryPreprocessor telemetryPreprocessor;
+
+    private void showToast(final String message, final int duration) {
+        Log.i(TAG, "Toast: " + message);
+        runOnUiThread(() -> Toast.makeText(MainActivity.this, message, duration).show());
+    }
     
     /** Returns the device model string (e.g. "Pixel 9a" or "23049PCD8G" for Poco F5). */
     public static String getDeviceModel() {
@@ -234,11 +239,10 @@ public class MainActivity extends GameActivity {
                         runOnUiThread(() -> {
                             if (selectedConfigFile != null) {
                                 Log.i(TAG, "Config picked: " + selectedConfigFile.getAbsolutePath());
-                                Toast.makeText(this, "Config: " + selectedConfigFile.getName(),
-                                        Toast.LENGTH_SHORT).show();
+                                showToast("Config: " + selectedConfigFile.getName(), Toast.LENGTH_SHORT);
                                 notifyPlatformEvent("config_picked", selectedConfigFile.getAbsolutePath());
                             } else {
-                                Toast.makeText(this, "Failed to read config file", Toast.LENGTH_SHORT).show();
+                                showToast("Failed to read config file", Toast.LENGTH_SHORT);
                             }
                         });
                     });
@@ -264,20 +268,17 @@ public class MainActivity extends GameActivity {
 
                     String displayName = queryDisplayName(uri);
                     if (!isCsvName(displayName)) {
-                        Toast.makeText(this, "Only CSV telemetry logs are supported",
-                                Toast.LENGTH_SHORT).show();
+                        showToast("Only CSV telemetry logs are supported", Toast.LENGTH_SHORT);
                     } else {
                         backgroundExecutor.execute(() -> {
                             selectedCsvFile = ensureLocalFileForUri(uri, "telemetry_csv_", ".csv");
                             runOnUiThread(() -> {
                                 if (selectedCsvFile != null) {
                                     Log.i(TAG, "CSV picked: " + selectedCsvFile.getAbsolutePath());
-                                    Toast.makeText(this, "CSV selected: " + selectedCsvFile.getName(),
-                                            Toast.LENGTH_SHORT).show();
+                                    showToast("CSV selected: " + selectedCsvFile.getName(), Toast.LENGTH_SHORT);
                                     notifyPlatformEvent("csv_picked", selectedCsvFile.getAbsolutePath());
                                 } else {
-                                    Toast.makeText(this, "Failed to read telemetry CSV",
-                                            Toast.LENGTH_SHORT).show();
+                                    showToast("Failed to read telemetry CSV", Toast.LENGTH_SHORT);
                                 }
                             });
                         });
@@ -307,11 +308,10 @@ public class MainActivity extends GameActivity {
                         runOnUiThread(() -> {
                             if (selectedVideoFile != null) {
                                 Log.i(TAG, "MP4 picked: " + selectedVideoFile.getAbsolutePath());
-                                Toast.makeText(this, "MP4 selected: " + selectedVideoFile.getName(),
-                                        Toast.LENGTH_SHORT).show();
+                                showToast("MP4 selected: " + selectedVideoFile.getName(), Toast.LENGTH_SHORT);
                                 notifyPlatformEvent("mp4_picked", selectedVideoFile.getAbsolutePath());
                             } else {
-                                Toast.makeText(this, "Failed to read MP4", Toast.LENGTH_SHORT).show();
+                                showToast("Failed to read MP4", Toast.LENGTH_SHORT);
                             }
                         });
                     });
@@ -383,12 +383,12 @@ public class MainActivity extends GameActivity {
     private void startTelemetryPreprocessIfReady(String mergedConfigJsonStr) {
         if (telemetryRunning) return;
         if (selectedVideoFile == null || !selectedVideoFile.exists()) {
-            Toast.makeText(this, "Pick an MP4 before training", Toast.LENGTH_SHORT).show();
+            showToast("Pick an MP4 before training", Toast.LENGTH_SHORT);
             notifyPlatformEvent("train_not_ready", "");
             return;
         }
         if (selectedCsvFile == null || !selectedCsvFile.exists()) {
-            Toast.makeText(this, "Pick a CSV log before training", Toast.LENGTH_SHORT).show();
+            showToast("Pick a CSV log before training", Toast.LENGTH_SHORT);
             notifyPlatformEvent("train_not_ready", "");
             return;
         }
@@ -396,7 +396,7 @@ public class MainActivity extends GameActivity {
         cleanupTelemetryOutputs();
 
         telemetryRunning = true;
-        Toast.makeText(this, "Starting telemetry preprocess...", Toast.LENGTH_SHORT).show();
+        showToast("Starting telemetry preprocess...", Toast.LENGTH_SHORT);
 
         TelemetryPreprocessorCallback callback = new TelemetryPreprocessorCallback() {
             @Override
@@ -410,16 +410,12 @@ public class MainActivity extends GameActivity {
                                    TelemetryProcessingReport report) {
                 telemetryRunning = false;
                 if (error == null) {
-                    Toast.makeText(MainActivity.this, "Telemetry preprocess complete", Toast.LENGTH_SHORT).show();
+                    showToast("Telemetry preprocess complete", Toast.LENGTH_SHORT);
                     if (sequence != null) {
                         File telemetryDir = sequence.getLogPath().getParentFile();
                         if (telemetryDir == null) {
                             Log.e(TAG, "Telemetry log path has no parent directory");
-                            Toast.makeText(
-                                    MainActivity.this,
-                                    "Telemetry output directory is unavailable",
-                                    Toast.LENGTH_LONG
-                            ).show();
+                            showToast("Telemetry output directory is unavailable", Toast.LENGTH_LONG);
                             notifyPlatformEvent("train_not_ready", "");
                             return;
                         }
@@ -431,17 +427,13 @@ public class MainActivity extends GameActivity {
 
                         backgroundExecutor.execute(() -> runSparseExport(sequence, plyFile, resultFile, mergedConfigJsonStr));
 
-                        Toast.makeText(
-                                MainActivity.this,
-                                "Output: " + sequence.getLogPath().getParent(),
-                                Toast.LENGTH_LONG
-                        ).show();
+                        showToast("Output: " + sequence.getLogPath().getParent(), Toast.LENGTH_LONG);
                     }
                 } else {
                     Log.e(TAG, "Telemetry preprocess failed", error);
                     String msg = error.getMessage() != null ? error.getMessage() : "Telemetry preprocess failed";
-                    Toast.makeText(MainActivity.this, "Telemetry preprocess failed", Toast.LENGTH_LONG).show();
-                    Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                    showToast("Telemetry preprocess failed", Toast.LENGTH_LONG);
+                    showToast(msg, Toast.LENGTH_LONG);
                     notifyPlatformEvent("train_not_ready", "");
                 }
             }
@@ -481,7 +473,7 @@ public class MainActivity extends GameActivity {
             String mergedJson = getMergedConfigJson(json);
             PipelineConfig cfg = PipelineConfig.parse(mergedJson);
             if (selectedVideoFile == null || !selectedVideoFile.exists()) {
-                runOnUiThread(() -> Toast.makeText(this, "Choose an MP4 first", Toast.LENGTH_SHORT).show());
+                showToast("Choose an MP4 first", Toast.LENGTH_SHORT);
                 notifyPlatformEvent("extraction_complete", "");
                 return;
             }
@@ -493,7 +485,7 @@ public class MainActivity extends GameActivity {
 
             if (telemetryMode) {
                 if (selectedCsvFile == null || !selectedCsvFile.exists()) {
-                    runOnUiThread(() -> Toast.makeText(this, "Telemetry mode needs a CSV — choose CSV first", Toast.LENGTH_LONG).show());
+                    showToast("Telemetry mode needs a CSV — choose CSV first", Toast.LENGTH_LONG);
                     notifyPlatformEvent("extraction_complete", "");
                     return;
                 }
@@ -508,7 +500,7 @@ public class MainActivity extends GameActivity {
                 );
                 
                 if (timesUs.length == 0) {
-                    runOnUiThread(() -> Toast.makeText(this, "No telemetry keyframes — check CSV and video", Toast.LENGTH_LONG).show());
+                    showToast("No telemetry keyframes — check CSV and video", Toast.LENGTH_LONG);
                     notifyPlatformEvent("extraction_complete", "");
                     return;
                 }
@@ -524,7 +516,7 @@ public class MainActivity extends GameActivity {
 
                 @Override
                 public void onFinished() {
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Frames extracted!", Toast.LENGTH_SHORT).show());
+                    showToast("Frames extracted!", Toast.LENGTH_SHORT);
                     notifyPlatformEvent("extraction_complete", "");
                     if (telemetryMode) {
                         runOnUiThread(() -> {
@@ -659,7 +651,7 @@ public class MainActivity extends GameActivity {
                     Log.i(TAG, "Skipping sparse export toast because activity is finishing");
                     return;
                 }
-                Toast.makeText(getApplicationContext(), toastMessage, Toast.LENGTH_LONG).show();
+                showToast(toastMessage, Toast.LENGTH_LONG);
             });
         } catch (Exception e) {
             Log.e(TAG, "Sparse export failed", e);
@@ -672,11 +664,7 @@ public class MainActivity extends GameActivity {
                     Log.i(TAG, "Skipping sparse export failure toast because activity is finishing");
                     return;
                 }
-                Toast.makeText(
-                        getApplicationContext(),
-                        "Sparse export failed: " + e.getMessage(),
-                        Toast.LENGTH_LONG
-                ).show();
+                showToast("Sparse export failed: " + e.getMessage(), Toast.LENGTH_LONG);
             });
         }
     }
