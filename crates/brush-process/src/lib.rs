@@ -88,8 +88,42 @@ pub(crate) fn connect_device(device: WgpuDevice) {
 }
 
 pub fn burn_init_device(adapter: Adapter, device: Device, queue: Queue) -> WgpuDevice {
-    let max_buffer_size = adapter.limits().max_buffer_size;
+    let adapter_limit = adapter.limits().max_buffer_size;
+    let adapter_info = adapter.get_info();
+
+    // Qualcomm Adreno Vulkan drivers report an inflated max_buffer_size to wgpu
+    // (e.g. 2 GB) that does not reflect the real per-allocation hardware limit
+    // (~128 MB on Adreno 725 / Snapdragon 8 Gen 1). Detect this by vendor ID
+    // and clamp only for Qualcomm on Android. Other vendors (Mali, Tensor, etc.)
+    // report accurate limits so we leave those untouched.
+    let max_buffer_size = {
+        const QUALCOMM_VENDOR_ID: u32 = 0x5143;
+        // The inflated wgpu default is 2 GB; anything suspicious is > 256 MB.
+        const QCOM_ANDROID_CAP: u64 = 128 * 1024 * 1024;
+        const INFLATION_THRESHOLD: u64 = 256 * 1024 * 1024;
+
+        #[cfg(target_os = "android")]
+        let clamped = if adapter_info.vendor == QUALCOMM_VENDOR_ID
+            && adapter_limit > INFLATION_THRESHOLD
+        {
+            QCOM_ANDROID_CAP
+        } else {
+            adapter_limit
+        };
+        #[cfg(not(target_os = "android"))]
+        let clamped = adapter_limit;
+
+        clamped
+    };
+
+    log::info!(
+        "[BRUSH_FLOW] burn_init_device: vendor=0x{:04X} adapter_limit={:.1}MB effective_limit={:.1}MB",
+        adapter_info.vendor,
+        adapter_limit as f64 / (1024.0 * 1024.0),
+        max_buffer_size as f64 / (1024.0 * 1024.0),
+    );
     let _ = MAX_BUFFER_SIZE.set(max_buffer_size);
+
     let setup = burn_wgpu::WgpuSetup {
         instance: wgpu::Instance::new(&wgpu::InstanceDescriptor::default()), // unused... need to fix this in Burn.
         adapter,
@@ -195,7 +229,7 @@ pub fn create_process<
                     let message = message?;
                     log::info!("[BRUSH_FLOW] create_process: Splat frame received and parsed.");
 
-                    if let Some(&max_buf) = MAX_BUFFER_SIZE.get() {
+                    {
                         let n_splats = message.data.num_splats() as u64;
                         let means_size = n_splats * 3 * 4;
                         let rot_size = n_splats * 4 * 4;
@@ -214,9 +248,23 @@ pub fn create_process<
                             .max(opac_size)
                             .max(sh_size);
 
+                        // 128 MB fallback: Adreno and other mobile drivers report inflated limits.
+                        // burn_init_device already clamps to 128 MB on Android, but use the
+                        // same constant here in case MAX_BUFFER_SIZE was never set (race).
+                        const SAFE_FALLBACK_LIMIT: u64 = 128 * 1024 * 1024;
+                        let max_buf = MAX_BUFFER_SIZE.get().copied().unwrap_or(SAFE_FALLBACK_LIMIT);
+
+                        log::info!(
+                            "[BRUSH_FLOW] Buffer check: n_splats={n_splats} \
+                             largest={:.1}MB limit={:.1}MB",
+                            max_req as f64 / (1024.0 * 1024.0),
+                            max_buf as f64 / (1024.0 * 1024.0),
+                        );
+
                         if max_req > max_buf {
                             anyhow::bail!(
-                                "Splat buffer ({:.1} MB) exceeds device limit ({:.1} MB); try subsampling",
+                                "Splat too large: needs {:.1} MB but device limit is {:.1} MB. \
+                                 Try a smaller or subsampled PLY file.",
                                 max_req as f64 / (1024.0 * 1024.0),
                                 max_buf as f64 / (1024.0 * 1024.0)
                             );
