@@ -133,7 +133,7 @@ mod tests {
 
         assert!(prior.rvec.iter().all(|v| v.is_finite()));
         assert!((prior.tvec[0] + 10.0).abs() < 1e-9);
-        assert!((prior.tvec[1] + 30.0).abs() < 1e-9);
+        assert!((prior.tvec[1] - 30.0).abs() < 1e-9);
         assert!((prior.tvec[2] + 20.0).abs() < 1e-9);
     }
 

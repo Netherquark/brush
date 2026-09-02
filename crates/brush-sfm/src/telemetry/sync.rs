@@ -1,3 +1,12 @@
+//! Time Synchronization Engine.
+//!
+//! ### Scope & Synchronization Approach
+//! - **Pragmatic MVP Alignment**: Uses video file creation/start timestamp + frame index
+//!   vs telemetry row timestamps, linearly aligned via [`LinearTimeSync`].
+//! - **Deliberate Scope Decision**: Barometric-altitude vs optical-flow vertical motion
+//!   cross-correlation is reserved as a research-grade extension if compute permits.
+//!   Linear alignment provides a deterministic, lightweight MVP suitable for on-device processing.
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
